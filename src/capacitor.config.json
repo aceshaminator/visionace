@@ -1,0 +1,12 @@
+{
+  "appId": "com.visionace.motion",
+  "appName": "Motion",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "Haptics": {},
+    "Device": {}
+  }
+}
