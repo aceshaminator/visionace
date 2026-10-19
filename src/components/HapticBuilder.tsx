@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Haptics, ImpactStyle } from '@capacitor/haptics';
+import { AudioVisemeEngine } from './audioVisemeEngine';
 
 export const HapticBuilder: React.FC = () => {
   const [intensity, setIntensity] = useState<number>(75);
   const [feedbackStyle, setFeedbackStyle] = useState<'Pulse' | 'Wave' | 'Sharp'>('Wave');
+  const [enabled, setEnabled] = useState(true);
 
+  // Trigger manual test vibration
   const triggerHaptic = async () => {
     // Fallback for browser testing
     if (typeof window !== 'undefined' && !(window as any).Capacitor?.isNativePlatform()) {
@@ -33,12 +36,50 @@ export const HapticBuilder: React.FC = () => {
     }
   };
 
+  // Auto-trigger haptics on phoneme detection
+  useEffect(() => {
+    if (!enabled) return;
+
+    const engine = new AudioVisemeEngine((visemeId, volume) => {
+      if (visemeId > 0) {
+        const duration = Math.min(200, Math.round((intensity / 100) * volume * 2));
+
+        // Browser fallback
+        if ('vibrate' in navigator) {
+          navigator.vibrate(duration);
+        }
+
+        // Native Capacitor
+        Haptics.vibrate({ duration }).catch(() => {});
+      }
+    });
+
+    engine.startListening();
+
+    return () => {
+      engine.stopListening();
+    };
+  }, [enabled, intensity]);
+
   return (
     <div className="p-6 bg-zinc-950 text-white rounded-2xl border border-zinc-800 max-w-lg mx-auto">
       <h2 className="text-xl font-bold mb-1">Tactile & Haptic Builder</h2>
       <p className="text-xs text-zinc-400 mb-6">
         Customize vibration patterns to assist phonetic recognition through touch.
       </p>
+
+      {/* Enable Toggle */}
+      <div className="mb-6">
+        <label className="flex items-center gap-2 cursor-pointer text-sm">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={() => setEnabled(!enabled)}
+            className="accent-sky-500"
+          />
+          <span>{enabled ? 'Enabled' : 'Disabled'}</span>
+        </label>
+      </div>
 
       {/* Intensity Slider */}
       <div className="mb-6">

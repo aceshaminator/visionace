@@ -1,0 +1,247 @@
+.practice-container {
+  max-width: 500px;
+  margin: 0 auto;
+  padding: 16px;
+  background-color: #0d1117;
+  color: #f0f6fc;
+  font-family: system-ui, -apple-system, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 100vh;
+}
+
+.practice-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #30363d;
+  padding-bottom: 12px;
+}
+
+.practice-header h2 {
+  font-size: 1rem;
+  letter-spacing: 0.05em;
+  margin: 0;
+}
+
+.btn-back {
+  background: transparent;
+  border: 1px solid #30363d;
+  color: #c9d1d9;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.room-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #161b22;
+  padding: 6px 10px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  border: 1px solid #30363d;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.status-dot.online { background-color: #2ea043; }
+.status-dot.offline { background-color: #da3633; }
+
+.partner-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+}
+
+.partner-status {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #7ee787;
+}
+
+.viseme-canvas {
+  background: #161b22;
+  border: 2px solid #238636;
+  border-radius: 12px;
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.viseme-shape {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  border: 3px solid #58a6ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d1117;
+}
+
+.viseme-mouth {
+  width: 40px;
+  height: 16px;
+  background: #58a6ff;
+  border-radius: 8px;
+  transition: all 0.15s ease-in-out;
+}
+
+.transcription-text {
+  font-size: 1.25rem;
+  margin: 4px 0;
+  color: #ffffff;
+}
+
+.phoneme-tag {
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: #8b949e;
+  background: #0d1117;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.clarity-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.clarity-card h4 {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #8b949e;
+  letter-spacing: 0.05em;
+}
+
+.meter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+
+.meter-bar {
+  width: 100%;
+  height: 10px;
+  background: #21262d;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: #2ea043;
+  transition: width 0.3s ease;
+}
+
+.meter-fill.volume {
+  background: #1f6beb;
+}
+
+.controls-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.btn-mic, .btn-secondary {
+  padding: 14px;
+  border-radius: 8px;
+  border: none;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.btn-mic {
+  background: #238636;
+  color: #ffffff;
+}
+
+.btn-mic.active {
+  background: #da3633;
+}
+
+.btn-secondary {
+  background: #21262d;
+  color: #f0f6fc;
+  border: 1px solid #30363d;
+}
+
+.btn-danger {
+  background: transparent;
+  border: 1px solid #da3633;
+  color: #f85149;
+  padding: 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  margin-top: auto;
+}
+
+/* Safety Alert Banner */
+.alert-banner {
+  background-color: #da3633;
+  color: #ffffff;
+  padding: 12px;
+  border-radius: 8px;
+  text-align: center;
+  font-weight: bold;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.7; }
+  100% { opacity: 1; }
+}
+
+/* QR Code Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  padding: 24px;
+  width: 90%;
+  max-width: 380px;
+  text-align: center;
+  color: #f0f6fc;
+}
+
+.qr-container {
+  background: #ffffff;
+  padding: 16px;
+  border-radius: 8px;
+  display: inline-block;
+  margin: 16px 0;
+}

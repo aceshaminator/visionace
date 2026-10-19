@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Activity, Play, Square, Smartphone, Zap } from 'lucide-react';
+import { AudioVisemeEngine } from './audioVisemeEngine';
 
 interface RhythmPattern {
   id: string;
@@ -10,34 +11,10 @@ interface RhythmPattern {
 }
 
 const RHYTHMS: RhythmPattern[] = [
-  {
-    id: 'steady',
-    name: 'Steady Pulse',
-    description: 'Equal interval pacing designed for fundamental tempo and beat tracking.',
-    pattern: [300, 300, 300, 300],
-    bpm: 100,
-  },
-  {
-    id: 'heartbeat',
-    name: 'Heartbeat Rhythm',
-    description: 'Double-tap rhythm mirroring a calm resting pulse.',
-    pattern: [200, 100, 200, 500],
-    bpm: 75,
-  },
-  {
-    id: 'syncopated',
-    name: 'Syncopated Groove',
-    description: 'Varying duration pulses for complex musical rhythm translation.',
-    pattern: [150, 150, 400, 150, 300],
-    bpm: 120,
-  },
-  {
-    id: 'sos',
-    name: 'Alert Pattern (SOS)',
-    description: 'Distinct short and long sequences for sharp environmental cues.',
-    pattern: [150, 100, 150, 100, 150, 300, 400, 100, 400, 100, 400],
-    bpm: 90,
-  },
+  { id: 'steady', name: 'Steady Pulse', description: 'Equal interval pacing designed for fundamental tempo and beat tracking.', pattern: [300, 300, 300, 300], bpm: 100 },
+  { id: 'heartbeat', name: 'Heartbeat Rhythm', description: 'Double-tap rhythm mirroring a calm resting pulse.', pattern: [200, 100, 200, 500], bpm: 75 },
+  { id: 'syncopated', name: 'Syncopated Groove', description: 'Varying duration pulses for complex musical rhythm translation.', pattern: [150, 150, 400, 150, 300], bpm: 120 },
+  { id: 'sos', name: 'Alert Pattern (SOS)', description: 'Distinct short and long sequences for sharp environmental cues.', pattern: [150, 100, 150, 100, 150, 300, 400, 100, 400, 100, 400], bpm: 90 },
 ];
 
 export default function HapticModule() {
@@ -65,22 +42,16 @@ export default function HapticModule() {
       stopPlayback();
       return;
     }
-
     setIsPlaying(true);
     runPatternLoop(selectedRhythm.pattern);
   };
 
   const runPatternLoop = (pattern: number[]) => {
     let index = 0;
-
     const executeStep = () => {
       if (!isPlaying) return;
-
       const duration = pattern[index % pattern.length];
-      
-      if (hasVibrationSupport) {
-        navigator.vibrate(duration);
-      }
+      if (hasVibrationSupport) navigator.vibrate(duration);
       setIsPulseActive(true);
 
       timerRef.current = setTimeout(() => {
@@ -93,19 +64,30 @@ export default function HapticModule() {
         }, 200);
       }, duration);
     };
-
     executeStep();
   };
 
+  // 🔊 Speech-triggered haptics
   useEffect(() => {
+    const engine = new AudioVisemeEngine((visemeId, volume) => {
+      if (visemeId > 0 && hasVibrationSupport) {
+        const duration = Math.min(200, Math.round(volume * 2));
+        navigator.vibrate(duration);
+        setIsPulseActive(true);
+        setTimeout(() => setIsPulseActive(false), duration);
+      }
+    });
+
+    engine.startListening();
     return () => {
+      engine.stopListening();
       stopPlayback();
     };
   }, [selectedRhythm]);
 
   return (
     <div className="w-full max-w-5xl mx-auto space-y-8">
-      {/* Module Header */}
+      {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-800 pb-6">
         <div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-400 mb-2">
@@ -121,12 +103,14 @@ export default function HapticModule() {
         <div className="flex items-center gap-3 bg-zinc-900 border border-zinc-800 px-4 py-2.5 rounded-2xl">
           <Smartphone className={`w-4 h-4 ${hasVibrationSupport ? 'text-emerald-400' : 'text-amber-400'}`} />
           <span className="text-xs text-zinc-300 font-medium">
-            Device Haptics: <strong className={hasVibrationSupport ? 'text-emerald-400' : 'text-amber-400'}>{hasVibrationSupport ? 'Supported' : 'Simulated Visuals'}</strong>
+            Device Haptics: <strong className={hasVibrationSupport ? 'text-emerald-400' : 'text-amber-400'}>
+              {hasVibrationSupport ? 'Supported' : 'Simulated Visuals'}
+            </strong>
           </span>
         </div>
       </div>
 
-      {/* Pattern Selector Grid */}
+      {/* Pattern Selector */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {RHYTHMS.map((r) => {
           const isSelected = selectedRhythm.id === r.id;
@@ -156,7 +140,7 @@ export default function HapticModule() {
         })}
       </div>
 
-      {/* Main Visualizer & Playback Control */}
+            {/* Visualizer & Controls */}
       <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-8 md:p-12 text-center relative overflow-hidden flex flex-col items-center justify-center">
         <div className={`absolute inset-0 bg-cyan-500/5 transition-opacity duration-300 pointer-events-none ${isPulseActive ? 'opacity-100 scale-105' : 'opacity-0'}`} />
 
@@ -174,7 +158,7 @@ export default function HapticModule() {
           {isPlaying ? 'Active haptic pulse sequence running. Feel your device vibrate.' : 'Press play to initiate tactile vibration and visual beat tracking.'}
         </p>
 
-        <button
+               <button
           onClick={isPlaying ? stopPlayback : startPlayback}
           className={`px-8 py-4 rounded-2xl font-semibold text-sm transition-all flex items-center gap-3 shadow-lg ${
             isPlaying

@@ -1,34 +1,42 @@
 import React from 'react';
+import { useStats } from '@/context/StatsContext';
 
-export const StatsDashboard: React.FC = () => {
+export default function StatsDashboard() {
+  const { streak, accuracy, level, resetStats } = useStats();
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', width: '100%', maxWidth: '360px', margin: '0 auto', color: '#f8fafc' }}>
-      <div style={{ background: '#09090b', padding: '20px', borderRadius: '16px', border: '1px solid #27272a' }}>
-        <h3 style={{ fontSize: '1.1rem', marginBottom: '6px', fontWeight: '700' }}>Learning Progress & Analytics</h3>
-        <p style={{ fontSize: '0.8rem', color: '#a1a1aa', marginBottom: '20px' }}>
-          Review your daily milestones and articulation accuracy metrics.
-        </p>
+    <div className="p-8 text-center">
+      {/* Header */}
+      <h2 className="text-3xl font-bold text-emerald-400">Stats Dashboard</h2>
+      <p className="text-zinc-300 mt-3">
+        Track your practice streaks, accuracy, and mastery progress here.
+      </p>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-          <div style={{ background: '#18181b', padding: '14px', borderRadius: '10px', border: '1px solid #3f3f46', textAlign: 'center' }}>
-            <span style={{ fontSize: '0.7rem', color: '#a1a1aa' }}>Practice Streak</span>
-            <div style={{ fontSize: '1.4rem', fontWeight: '800', color: '#38bdf8', marginTop: '4px' }}>7 Days 🔥</div>
-          </div>
-          <div style={{ background: '#18181b', padding: '14px', borderRadius: '10px', border: '1px solid #3f3f46', textAlign: 'center' }}>
-            <span style={{ fontSize: '0.7rem', color: '#a1a1aa' }}>Avg Accuracy</span>
-            <div style={{ fontSize: '1.4rem', fontWeight: '800', color: '#22c55e', marginTop: '4px' }}>92.4%</div>
-          </div>
+      {/* Stats Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+        <div className="p-4 rounded-lg bg-zinc-900 border border-zinc-800">
+          <h4 className="text-sm font-bold text-zinc-400 uppercase">Practice Streak</h4>
+          <p className="text-2xl font-bold text-white">{streak} sessions</p>
         </div>
 
-        <div style={{ background: '#18181b', padding: '14px', borderRadius: '10px', border: '1px solid #3f3f46' }}>
-          <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#f8fafc', display: 'block', marginBottom: '8px' }}>Viseme Mastery Breakdown</span>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.75rem', color: '#a1a1aa' }}>
-            <div style={{ display: 'ж', justifyContent: 'space-between' }}><span>P_B_M Plosives</span> <strong style={{ color: '#22c55e' }}>98%</strong></div>
-            <div style={{ display: 'ж', justifyContent: 'space-between' }}><span>A_E Vowels</span> <strong style={{ color: '#22c55e' }}>94%</strong></div>
-            <div style={{ display: 'ж', justifyContent: 'space-between' }}><span>F_V Labiodentals</span> <strong style={{ color: '#38bdf8' }}>88%</strong></div>
-          </div>
+        <div className="p-4 rounded-lg bg-zinc-900 border border-zinc-800">
+          <h4 className="text-sm font-bold text-zinc-400 uppercase">Average Accuracy</h4>
+          <p className="text-2xl font-bold text-white">{accuracy}%</p>
+        </div>
+
+        <div className="p-4 rounded-lg bg-zinc-900 border border-zinc-800">
+          <h4 className="text-sm font-bold text-zinc-400 uppercase">Mastery Level</h4>
+          <p className="text-2xl font-bold text-white">{level}</p>
         </div>
       </div>
+
+      {/* Reset Button */}
+      <button
+        onClick={resetStats}
+        className="mt-8 px-6 py-3 rounded-lg bg-red-500 text-white font-bold hover:bg-red-400 transition"
+      >
+        Reset Progress
+      </button>
     </div>
   );
-};
+}

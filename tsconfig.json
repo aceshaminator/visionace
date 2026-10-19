@@ -13,7 +13,12 @@
     "jsx": "react-jsx",
     "strict": false,
     "noImplicitAny": false,
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "paths": {
+      "context/*": ["./src/context/*"],
+      "components/*": ["./src/components/*"],
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src"]
 }
