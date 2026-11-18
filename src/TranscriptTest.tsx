@@ -4,6 +4,17 @@ import * as THREE from 'three';
 
 declare const Vosk: any;
 
+// Plain-language reason shown to the person when the microphone cannot start.
+function micErrorMessage(err: any): string {
+  const name = err?.name || '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    return 'Microphone permission was blocked. Allow the microphone for this app in your phone settings, then try again.';
+  }
+  if (name === 'NotFoundError') return 'No microphone was found on this device.';
+  if (name === 'NotReadableError') return 'The microphone is being used by another app. Close it and try again.';
+  return `Could not start the microphone: ${err?.message || 'unknown error'}`;
+}
+
 interface TranscriptEntry {
   id: string;
   speaker: string;
@@ -101,6 +112,11 @@ export default function TranscriptTest() {
 
   const confidenceSumRef = useRef<number>(0);
   const confidenceCountRef = useRef<number>(0);
+
+  // The speech model keeps running for the whole session, so it reads the current speaker from here
+  // instead of being reloaded (41 MB) every time the speaker button is pressed.
+  const activeSpeakerRef = useRef<'Speaker 1' | 'Speaker 2'>(activeSpeaker);
+  useEffect(() => { activeSpeakerRef.current = activeSpeaker; }, [activeSpeaker]);
 
   // Initialize Three.js Avatar Canvas
   useEffect(() => {
@@ -371,8 +387,8 @@ export default function TranscriptTest() {
     async function initVosk() {
       try {
         setStatus('Loading local Vosk model...');
-        const model = await Vosk.createModel('models/vosk-model-small-en-us-0.15.zip');
-        if (!isMounted) return;
+        const model = await Vosk.createModel('/models/vosk-model-small-en-us-0.15.zip');
+        if (!isMounted) { try { model.terminate(); } catch (e) { /* already gone */ } return; }
         modelRef.current = model;
         const recognizer = new model.KaldiRecognizer(16000);
         recognizerRef.current = recognizer;
@@ -391,7 +407,7 @@ export default function TranscriptTest() {
             const text = message.result.text;
             setCurrentGloss(text.toUpperCase());
             const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            const newEntry: TranscriptEntry = { id: Math.random().toString(36).substring(2), speaker: `${activeSpeaker} (Local)`, text, timestamp: now };
+            const newEntry: TranscriptEntry = { id: Math.random().toString(36).substring(2), speaker: `${activeSpeakerRef.current} (Local)`, text, timestamp: now };
             setEntries((prev) => {
               const updated = [...prev, newEntry];
               localStorage.setItem('motion_transcript_entries', JSON.stringify(updated));
@@ -410,8 +426,10 @@ export default function TranscriptTest() {
       isMounted = false;
       if (recognizerRef.current) recognizerRef.current.remove();
       if (modelRef.current) modelRef.current.terminate();
+      recognizerRef.current = null;
+      modelRef.current = null;
     };
-  }, [activeSpeaker]);
+  }, []);
 
   useEffect(() => { transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [entries]);
 
@@ -544,6 +562,10 @@ export default function TranscriptTest() {
   const startRecording = async () => {
     if (provider === 'vosk') {
       try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          alert('The microphone needs a secure (https) connection. Open the app from its https address.');
+          return;
+        }
         if (!isReady || !recognizerRef.current) { alert('Local model is still loading...'); return; }
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
         streamRef.current = stream;
@@ -558,7 +580,16 @@ export default function TranscriptTest() {
         setupAudioAnalysis(audioContext, source);
         setRecording(true);
         setStatus('Recording via Vosk (Offline)...');
-      } catch (err) { console.error(err); }
+      } catch (err: any) {
+        console.error(err);
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+        audioContextRef.current?.close().catch(() => {});
+        audioContextRef.current = null;
+        const msg = micErrorMessage(err);
+        setStatus(msg);
+        alert(msg);
+      }
     } else {
       const subKey = import.meta.env.VITE_AZURE_SPEECH_KEY;
       const reg = import.meta.env.VITE_AZURE_SPEECH_REGION;
@@ -590,21 +621,35 @@ export default function TranscriptTest() {
             setCurrentGloss(text.toUpperCase());
             const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             setEntries((prev) => {
-              const updated = [...prev, { id: Math.random().toString(36).substring(2), speaker: `${activeSpeaker} (Cloud)`, text, timestamp: now }];
+              const updated = [...prev, { id: Math.random().toString(36).substring(2), speaker: `${activeSpeakerRef.current} (Cloud)`, text, timestamp: now }];
               localStorage.setItem('motion_transcript_entries', JSON.stringify(updated));
               return updated;
             });
           }
         };
         recognizer.startContinuousRecognitionAsync(() => { setRecording(true); setStatus('Recording via Azure AI Speech...'); });
-      } catch (err) { console.error(err); }
+      } catch (err: any) {
+        console.error(err);
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+        audioContextRef.current?.close().catch(() => {});
+        audioContextRef.current = null;
+        const msg = micErrorMessage(err);
+        setStatus(msg);
+        alert(msg);
+      }
     }
   };
 
   const stopRecording = () => {
     if (animFrameRef.current) { cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null; }
     if (metronomeIntervalRef.current) { clearInterval(metronomeIntervalRef.current); metronomeIntervalRef.current = null; }
-    if (provider === 'vosk' && processorRef.current) { processorRef.current.disconnect(); processorRef.current = null; }
+    if (provider === 'vosk' && processorRef.current) {
+      processorRef.current.disconnect();
+      processorRef.current = null;
+      // Ask the recognizer for the words it is still holding, so the last sentence is not lost.
+      try { recognizerRef.current?.retrieveFinalResult(); } catch (e) { /* nothing pending */ }
+    }
     if (provider === 'azure' && azureRecognizerRef.current) {
       azureRecognizerRef.current.stopContinuousRecognitionAsync(() => { azureRecognizerRef.current?.close(); azureRecognizerRef.current = null; });
     }
