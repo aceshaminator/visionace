@@ -1,6 +1,18 @@
 import React, { useEffect, useState, useRef } from 'react';
 import * as SpeechSDK from 'microsoft-cognitiveservices-speech-sdk';
 import * as THREE from 'three';
+import {
+  Mic, Hand, Smile, Music, FileText, Globe, Play, Square, Share2, Download, Trash2,
+  SlidersHorizontal, Minus, Plus, Loader2, WifiOff, Cloud, Zap, Type, Maximize2, Volume2, X, RotateCcw, ShieldAlert, MessageSquare, Phone,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import MouthAvatar from './MouthAvatar';
+import { TONES, TONE_KEYS, wordsFromText } from './mouthShapes';
+import type { MouthPlay, MouthWord, ToneKey } from './mouthShapes';
+import { guessVoiceGender, pickVoice, pitchFor } from './voices';
+import type { VoiceKind } from './voices';
+import { detectThreat, hasProfanity, helpMessage, maskProfanity, smsLink, whatsappLink } from './safety';
+import { estimatePitch, guessVoice } from './pitch';
 
 declare const Vosk: any;
 
@@ -15,15 +27,135 @@ function micErrorMessage(err: any): string {
   return `Could not start the microphone: ${err?.message || 'unknown error'}`;
 }
 
+
+type Mode = 'text' | 'dance' | 'avatar' | 'sign' | 'community';
+
+// Order shown on screen. The Alt+number shortcuts stay as they were.
+const MODES: { id: Mode; label: string; Icon: LucideIcon; shortcut: string; badge?: string }[] = [
+  { id: 'text', label: 'Text', Icon: FileText, shortcut: 'Alt+4' },
+  { id: 'sign', label: 'Sign', Icon: Hand, shortcut: 'Alt+1' },
+  { id: 'avatar', label: 'Avatar', Icon: Smile, shortcut: 'Alt+2' },
+  { id: 'dance', label: 'Dance', Icon: Music, shortcut: 'Alt+3' },
+  { id: 'community', label: 'Community', Icon: Globe, shortcut: 'Alt+5', badge: 'Soon' },
+];
+
+// Caption text sizes, smallest to largest. The person's choice is remembered on the device.
+const CAPTION_SIZES = ['text-lg', 'text-2xl', 'text-3xl', 'text-4xl'];
+
+// Safety settings, kept on the device only.
+type Safety = {
+  hideRude: boolean;     // hide swear words behind stars (tap to show)
+  threatAlerts: boolean; // ask about possible threats
+  voiceGuess: boolean;   // guess whether a voice sounds male or female
+  contactName: string;
+  contactPhone: string;
+  emergency: string;
+};
+const SAFETY_KEY = 'motion_safety';
+const DEFAULT_SAFETY: Safety = { hideRude: true, threatAlerts: true, voiceGuess: true, contactName: '', contactPhone: '', emergency: '112' };
+const VOICE_LABELS: Record<string, string> = { male: 'Likely male voice', female: 'Likely female voice', unclear: 'Voice unclear' };
+
+// Quick phrases for answering. The person can add and remove their own; they are saved on the device.
+const PHRASES_KEY = 'motion_quick_phrases';
+const DEFAULT_PHRASES = [
+  'Hello',
+  'Yes',
+  'No',
+  'Thank you',
+  'Please say that again',
+  'Please speak slowly and face me',
+  'Please type or write it for me',
+  'I cannot hear well',
+  'I need help',
+  'Where is the restroom?',
+];
+
+// Size of the text when a reply is shown full screen: short messages get huge letters.
+function overlayFont(text: string): string {
+  if (text.length < 20) return '4.5rem';
+  if (text.length < 50) return '3rem';
+  if (text.length < 110) return '2.25rem';
+  return '1.75rem';
+}
+
+const focusRing = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400';
+
+function Segmented<T extends string>(props: {
+  label: string;
+  value: T;
+  onChange: (v: T) => void;
+  disabled?: boolean;
+  options: { value: T; label: string; aria: string; icon?: React.ReactNode; activeClass?: string }[];
+}) {
+  const { label, value, onChange, disabled, options } = props;
+  return (
+    <div role="radiogroup" aria-label={label} className="flex items-center gap-2">
+      <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</span>
+      <div className="flex rounded-xl bg-slate-950 p-1">
+        {options.map((o) => {
+          const on = value === o.value;
+          return (
+            <button
+              key={o.value}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              aria-label={o.aria}
+              disabled={disabled}
+              onClick={() => onChange(o.value)}
+              className={`flex min-h-[40px] items-center gap-1.5 rounded-lg px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${focusRing} ${
+                on ? o.activeClass || 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-100'
+              }`}
+            >
+              {o.icon}
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Panel(props: {
+  icon: React.ReactNode;
+  title: string;
+  badge: string;
+  badgeLabel: string;
+  badgeClass: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="mb-4 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+        <h2 className="flex items-center gap-2 text-sm font-bold text-slate-100">
+          {props.icon}
+          {props.title}
+        </h2>
+        <span aria-label={props.badgeLabel} className={`rounded-lg px-2.5 py-1 text-xs font-extrabold ${props.badgeClass}`}>
+          {props.badge}
+        </span>
+      </div>
+      {props.children}
+    </section>
+  );
+}
+
+const actionBtn = `flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40 ${focusRing}`;
+
 interface TranscriptEntry {
   id: string;
   speaker: string;
   text: string;
   timestamp: string;
+  rude?: boolean;      // contains swear words
+  threat?: boolean;    // matched a possible threat
+  voice?: 'male' | 'female' | 'unclear'; // a guess from pitch
+  pitchHz?: number;
 }
 
 export default function TranscriptTest() {
-  const [appMode, setAppMode] = useState<'text' | 'dance' | 'avatar' | 'sign' | 'community'>('community');
+  const [appMode, setAppMode] = useState<Mode>('text');
   const [provider, setProvider] = useState<'vosk' | 'azure'>('vosk');
   const [activeSpeaker, setActiveSpeaker] = useState<'Speaker 1' | 'Speaker 2'>('Speaker 1');
   const [entries, setEntries] = useState<TranscriptEntry[]>(() => {
@@ -52,6 +184,111 @@ export default function TranscriptTest() {
   const [bpm, setBpm] = useState<number | null>(120);
   const [currentViseme, setCurrentViseme] = useState<string>('Resting / Neutral');
   const [currentGloss, setCurrentGloss] = useState<string>('READY');
+  const [captionSize, setCaptionSize] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('motion_caption_size'));
+      return Number.isInteger(v) && v >= 0 && v < CAPTION_SIZES.length ? v : 1;
+    } catch { return 1; }
+  });
+
+  // Two-way talking: what the person types, their saved phrases, and the full-screen message.
+  const [draft, setDraft] = useState('');
+  const [phrases, setPhrases] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(PHRASES_KEY) || 'null');
+      if (Array.isArray(saved) && saved.every((p) => typeof p === 'string')) return saved;
+    } catch { /* use the default phrases */ }
+    return DEFAULT_PHRASES;
+  });
+  const [editPhrases, setEditPhrases] = useState(false);
+  const [showing, setShowing] = useState<string | null>(null);
+  const canSpeak = typeof window !== 'undefined' && 'speechSynthesis' in window;
+  // While the phone speaks a reply, the microphone ignores sound so the phone does not caption its own voice.
+  const speakingRef = useRef(false);
+  const speakIdRef = useRef(0);
+
+  // Noise filter: the speech engine sometimes turns room noise into words ("huh"). A caption is only kept
+  // when the sound behind it was clearly louder than the room's usual background level.
+  const [noiseGate, setNoiseGate] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('motion_noise_gate'));
+      return v >= 1 && v <= 6 ? v : 2.5;
+    } catch { return 2.5; }
+  });
+  const gateRef = useRef(noiseGate);
+  useEffect(() => { gateRef.current = noiseGate; }, [noiseGate]);
+  const noiseFloorRef = useRef(0);   // the room's usual background level
+  const peakRatioRef = useRef(0);    // loudest moment since the last caption, compared with the background
+  const warmupEndRef = useRef(0);    // the first seconds are used to learn the background, nothing is dropped
+  const loudRunRef = useRef(0);      // how many blocks in a row were clearly louder than the background
+  const lastSpeechAtRef = useRef(0); // the last moment when sustained speech-level sound was heard
+  const discardResultsUntilRef = useRef(0); // results arriving before this time are thrown away
+
+  // Mouth avatar: what it is showing, the skin tone, and the practice box.
+  const [mouthPlay, setMouthPlay] = useState<MouthPlay | null>(null);
+  const [avatarTone, setAvatarTone] = useState<ToneKey>(() => {
+    try {
+      const v = localStorage.getItem('motion_avatar_tone');
+      return v && v in TONES ? (v as ToneKey) : 'brown';
+    } catch { return 'brown'; }
+  });
+  const [practiceText, setPracticeText] = useState('');
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [voiceKind, setVoiceKind] = useState<VoiceKind>(() => {
+    try { const v = localStorage.getItem('motion_voice_kind'); return v === 'female' || v === 'male' ? v : 'default'; } catch { return 'default'; }
+  });
+  const [voiceName, setVoiceName] = useState<string>(() => { try { return localStorage.getItem('motion_voice_name') || ''; } catch { return ''; } });
+  const [voicePitch, setVoicePitch] = useState<number>(() => { try { const v = Number(localStorage.getItem('motion_voice_pitch')); return v >= 0.5 && v <= 2 ? v : 1; } catch { return 1; } });
+  const [voiceRate, setVoiceRate] = useState<number>(() => { try { const v = Number(localStorage.getItem('motion_voice_rate')); return v >= 0.5 && v <= 1.6 ? v : 0.95; } catch { return 0.95; } });
+  const [voiceOpen, setVoiceOpen] = useState(false);
+
+  // Safety: settings, the current alert, hidden-word reveals, and the location for the help message.
+  const [safety, setSafety] = useState<Safety>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SAFETY_KEY) || 'null');
+      return raw && typeof raw === 'object' ? { ...DEFAULT_SAFETY, ...raw } : DEFAULT_SAFETY;
+    } catch { return DEFAULT_SAFETY; }
+  });
+  const safetyRef = useRef(safety);
+  useEffect(() => { safetyRef.current = safety; }, [safety]);
+  const updateSafety = (patch: Partial<Safety>) => {
+    setSafety((prev) => {
+      const next = { ...prev, ...patch };
+      try { localStorage.setItem(SAFETY_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
+      return next;
+    });
+  };
+  const [threat, setThreat] = useState<{ id: string; text: string; phrase: string; confirmed: boolean | null } | null>(null);
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  const [safetyOpen, setSafetyOpen] = useState(false);
+  const [helpLoc, setHelpLoc] = useState('');
+  const pitchSamplesRef = useRef<number[]>([]);
+  const raiseThreat = (id: string, text: string, phrase: string) => {
+    setThreat({ id, text, phrase, confirmed: null });
+    try { navigator.vibrate?.([300, 150, 300, 150, 300]); } catch { /* not available */ }
+  };
+  const [practiceSlow, setPracticeSlow] = useState(true);
+  const levelFloorRef = useRef(0); // the room's usual loudness as the mouth sees it
+  const playMouth = (words: MouthWord[], speed = 1) => {
+    if (words.length) setMouthPlay({ id: Math.random(), at: Date.now(), words, speed });
+  };
+
+  useEffect(() => {
+    if (!showing) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowing(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showing]);
+
+  useEffect(() => () => { try { window.speechSynthesis?.cancel(); } catch { /* not available */ } }, []);
+
+  useEffect(() => {
+    if (!canSpeak) return;
+    const load = () => setVoices(window.speechSynthesis.getVoices());
+    load();
+    window.speechSynthesis.addEventListener('voiceschanged', load);
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', load);
+  }, []);
 
   const modelRef = useRef<any>(null);
   const recognizerRef = useRef<any>(null);
@@ -117,148 +354,6 @@ export default function TranscriptTest() {
   // instead of being reloaded (41 MB) every time the speaker button is pressed.
   const activeSpeakerRef = useRef<'Speaker 1' | 'Speaker 2'>(activeSpeaker);
   useEffect(() => { activeSpeakerRef.current = activeSpeaker; }, [activeSpeaker]);
-
-  // Initialize Three.js Avatar Canvas
-  useEffect(() => {
-    if (appMode !== 'avatar') return;
-    let timerId: number;
-
-    const initAvatar = () => {
-      if (!avatarContainerRef.current) return;
-      const container = avatarContainerRef.current;
-      const width = container.clientWidth || 700;
-      const height = 260;
-
-      const scene = new THREE.Scene();
-      scene.background = new THREE.Color('#0b0f19');
-
-      const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
-      camera.position.set(0, 0, 5);
-
-      const renderer = new THREE.WebGLRenderer({ antialias: true });
-      renderer.setSize(width, height);
-      renderer.domElement.style.width = '100%';
-      renderer.domElement.style.height = '100%';
-
-      container.innerHTML = '';
-      container.appendChild(renderer.domElement);
-
-      scene.add(new THREE.AmbientLight(0xffffff, 0.9));
-      const pointLight = new THREE.PointLight(0x38bdf8, 2, 50);
-      pointLight.position.set(2, 3, 4);
-      scene.add(pointLight);
-
-      const headGroup = new THREE.Group();
-      const headMesh = new THREE.Mesh(new THREE.SphereGeometry(1.2, 32, 32), new THREE.MeshStandardMaterial({ color: '#151c2c', roughness: 0.3 }));
-      headGroup.add(headMesh);
-
-      const eyeMat = new THREE.MeshStandardMaterial({ color: '#38bdf8', emissive: '#0284c7', roughness: 0.2 });
-      const leftEye = new THREE.Mesh(new THREE.SphereGeometry(0.18, 16, 16), eyeMat);
-      leftEye.position.set(-0.4, 0.25, 1.05);
-      headGroup.add(leftEye);
-      const rightEye = new THREE.Mesh(new THREE.SphereGeometry(0.18, 16, 16), eyeMat);
-      rightEye.position.set(0.4, 0.25, 1.05);
-      headGroup.add(rightEye);
-
-      const teethMat = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.1 });
-      const upperTeeth = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.05, 0.03), teethMat);
-      upperTeeth.position.set(0, -0.28, 1.06);
-      headGroup.add(upperTeeth);
-      upperTeethRef.current = upperTeeth;
-
-      const lowerTeeth = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.05, 0.03), teethMat);
-      lowerTeeth.position.set(0, -0.42, 1.06);
-      headGroup.add(lowerTeeth);
-      lowerTeethRef.current = lowerTeeth;
-
-      const tongue = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.04, 0.1), new THREE.MeshStandardMaterial({ color: '#fb7185', roughness: 0.4 }));
-      tongue.position.set(0, -0.38, 1.05);
-      headGroup.add(tongue);
-      tongueRef.current = tongue;
-
-      const visemeGeometries = {
-        neutral: new THREE.ShapeGeometry((() => { const s = new THREE.Shape(); s.moveTo(-0.28, 0); s.quadraticCurveTo(0, -0.18, 0.28, 0); s.quadraticCurveTo(0, 0.18, -0.28, 0); return s; })()),
-        round: new THREE.ShapeGeometry((() => { const s = new THREE.Shape(); s.absarc(0, 0, 0.18, 0, Math.PI * 2, false); return s; })()),
-        stretch: new THREE.ShapeGeometry((() => { const s = new THREE.Shape(); s.moveTo(-0.35, 0); s.quadraticCurveTo(0, -0.08, 0.35, 0); s.quadraticCurveTo(0, 0.08, -0.35, 0); return s; })()),
-        squeeze: new THREE.ShapeGeometry((() => { const s = new THREE.Shape(); s.moveTo(-0.25, 0); s.quadraticCurveTo(0, -0.03, 0.25, 0); s.quadraticCurveTo(0, 0.03, -0.25, 0); return s; })())
-      };
-
-      const mouthMesh = new THREE.Mesh(visemeGeometries.neutral, new THREE.MeshBasicMaterial({ color: '#f43f5e', side: THREE.DoubleSide }));
-      mouthMesh.position.set(0, -0.35, 1.09);
-      headGroup.add(mouthMesh);
-      mouthMeshRef.current = mouthMesh;
-      scene.add(headGroup);
-
-      const clock = new THREE.Clock();
-      const dataArray = new Uint8Array(64);
-
-      const animateHead = () => {
-        const dt = clock.getDelta();
-        const elapsedTime = clock.getElapsedTime();
-        headGroup.rotation.y = Math.sin(elapsedTime * 0.8) * 0.08;
-        headGroup.position.y = Math.sin(elapsedTime * 2) * 0.02;
-
-        let targetScaleY = 1, targetScaleX = 1, targetPosY = -0.35;
-        let visemeLabel = 'Resting / Neutral';
-        let showTeeth = true, showTongue = true;
-        let targetShapeType: keyof typeof visemeGeometries = 'neutral';
-
-        if (analyserRef.current) {
-          analyserRef.current.getByteFrequencyData(dataArray);
-          let sumSquares = 0;
-          for (let i = 0; i < dataArray.length; i++) sumSquares += dataArray[i] * dataArray[i];
-          const rms = Math.sqrt(sumSquares / dataArray.length);
-
-          if (rms > 2.5) {
-            const volNorm = Math.min(1, rms / 80);
-            let lowSum = 0, highSum = 0;
-            for (let i = 1; i < 8; i++) lowSum += dataArray[i];
-            for (let i = 12; i < 30; i++) highSum += dataArray[i];
-
-            if (lowSum > highSum * 1.15) {
-              targetScaleY = 1.2 + volNorm * 1.3; targetScaleX = 1.0 + volNorm * 0.2; targetPosY = -0.38;
-              visemeLabel = 'A / AH (Wide Open)';
-            } else if (highSum > lowSum * 1.1) {
-              targetScaleY = 0.85 + volNorm * 0.3; targetScaleX = 1.2 + volNorm * 0.4; targetPosY = -0.34;
-              showTongue = false; visemeLabel = 'E / I (Horizontal Stretch)';
-            } else if (volNorm > 0.35) {
-              targetScaleY = 1.1 + volNorm * 0.4; targetScaleX = 0.85; targetPosY = -0.36;
-              showTeeth = false; showTongue = false; targetShapeType = 'round'; visemeLabel = 'O / U (Lip Rounding)';
-            } else {
-              targetScaleY = 0.5; targetScaleX = 0.95; targetPosY = -0.33;
-              showTeeth = false; showTongue = false; targetShapeType = 'squeeze'; visemeLabel = 'M / B / P (Squeezed)';
-            }
-          }
-        }
-
-        currentScaleYRef.current = THREE.MathUtils.damp(currentScaleYRef.current, targetScaleY, 14, dt);
-        currentScaleXRef.current = THREE.MathUtils.damp(currentScaleXRef.current, targetScaleX, 14, dt);
-        currentPosYRef.current = THREE.MathUtils.damp(currentPosYRef.current, targetPosY, 14, dt);
-        setCurrentViseme(visemeLabel);
-
-        if (mouthMeshRef.current) {
-          mouthMeshRef.current.scale.set(currentScaleXRef.current, currentScaleYRef.current, 1);
-          mouthMeshRef.current.position.y = currentPosYRef.current;
-          mouthMeshRef.current.geometry = visemeGeometries[targetShapeType];
-        }
-        if (upperTeethRef.current && lowerTeethRef.current && tongueRef.current) {
-          upperTeethRef.current.visible = showTeeth;
-          lowerTeethRef.current.visible = showTeeth;
-          tongueRef.current.visible = showTongue;
-        }
-
-        renderer.render(scene, camera);
-        headAnimFrameRef.current = requestAnimationFrame(animateHead);
-      };
-      animateHead();
-    };
-
-    timerId = requestAnimationFrame(initAvatar);
-    return () => {
-      cancelAnimationFrame(timerId);
-      if (headAnimFrameRef.current) cancelAnimationFrame(headAnimFrameRef.current);
-    };
-  }, [appMode]);
 
   // Initialize Three.js Sign Language Canvas & Articulated Skeletal Rig
   useEffect(() => {
@@ -392,8 +487,13 @@ export default function TranscriptTest() {
         modelRef.current = model;
         const recognizer = new model.KaldiRecognizer(16000);
         recognizerRef.current = recognizer;
+        try { recognizer.setWords(true); } catch (e) { /* older engine build: confidence stays unavailable */ }
 
         recognizer.on('result', (message: any) => {
+          if (performance.now() < discardResultsUntilRef.current) { peakRatioRef.current = 0; pitchSamplesRef.current = []; return; }
+          const heardRatio = peakRatioRef.current;
+          peakRatioRef.current = 0;
+          if (performance.now() > warmupEndRef.current && heardRatio < gateRef.current) { pitchSamplesRef.current = []; return; } // quiet noise, not speech
           if (message.result && message.result.text) {
             if (Array.isArray(message.result.result)) {
               message.result.result.forEach((w: any) => {
@@ -406,8 +506,27 @@ export default function TranscriptTest() {
             }
             const text = message.result.text;
             setCurrentGloss(text.toUpperCase());
+            const heard: MouthWord[] = Array.isArray(message.result.result)
+              ? message.result.result
+                  .filter((w: any) => typeof w.start === 'number' && typeof w.end === 'number')
+                  .map((w: any) => ({ word: String(w.word), start: w.start, end: w.end }))
+              : [];
+            playMouth(heard.length ? heard : wordsFromText(text, Math.max(0.8, text.length * 0.085)));
             const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            const newEntry: TranscriptEntry = { id: Math.random().toString(36).substring(2), speaker: `${activeSpeakerRef.current} (Local)`, text, timestamp: now };
+            const th = detectThreat(text);
+            const vg = guessVoice(pitchSamplesRef.current);
+            pitchSamplesRef.current = [];
+            const newEntry: TranscriptEntry = {
+              id: Math.random().toString(36).substring(2),
+              speaker: `${activeSpeakerRef.current} (Local)`,
+              text,
+              timestamp: now,
+              rude: hasProfanity(text),
+              threat: !!th,
+              voice: vg ? vg.voice : undefined,
+              pitchHz: vg ? vg.hz : undefined,
+            };
+            if (th && safetyRef.current.threatAlerts) raiseThreat(newEntry.id, text, th.phrase);
             setEntries((prev) => {
               const updated = [...prev, newEntry];
               localStorage.setItem('motion_transcript_entries', JSON.stringify(updated));
@@ -574,7 +693,43 @@ export default function TranscriptTest() {
         const source = audioContext.createMediaStreamSource(stream);
         const processor = audioContext.createScriptProcessor(4096, 1, 1);
         processorRef.current = processor;
-        processor.onaudioprocess = (e) => { try { recognizerRef.current.acceptWaveform(e.inputBuffer); } catch (err) {} };
+        noiseFloorRef.current = 0;
+        levelFloorRef.current = 0;
+        peakRatioRef.current = 0;
+        warmupEndRef.current = performance.now() + 2000;
+        pitchSamplesRef.current = [];
+        loudRunRef.current = 0;
+        lastSpeechAtRef.current = 0;
+        discardResultsUntilRef.current = 0;
+        processor.onaudioprocess = (e) => {
+          if (speakingRef.current) return;
+          const ch = e.inputBuffer.getChannelData(0);
+          let sum = 0;
+          for (let i = 0; i < ch.length; i++) sum += ch[i] * ch[i];
+          const rms = Math.sqrt(sum / ch.length);
+          let floor = noiseFloorRef.current;
+          if (floor === 0) floor = rms;
+          else if (rms < floor) floor = floor * 0.6 + rms * 0.4;            // quieter: follow down quickly
+          else if (rms < floor * 2) floor += (rms - floor) * 0.02;          // slowly rising background: follow up
+          noiseFloorRef.current = Math.max(floor, 0.0005);
+          const ratio = rms / noiseFloorRef.current;
+          if (ratio > peakRatioRef.current) peakRatioRef.current = ratio;
+          // Speech lasts longer than a click or a bump, so it takes two loud blocks in a row to count.
+          if (ratio >= gateRef.current) {
+            loudRunRef.current += 1;
+            if (loudRunRef.current >= 2) lastSpeechAtRef.current = performance.now();
+          } else {
+            loudRunRef.current = 0;
+          }
+          // While someone is clearly speaking, measure the pitch of the voice (for the male or female guess).
+          if (ratio >= gateRef.current && safetyRef.current.voiceGuess) {
+            for (let w = 0; w + 1024 <= ch.length; w += 1024) {
+              const hz = estimatePitch(ch.subarray(w, w + 1024), e.inputBuffer.sampleRate);
+              if (hz && pitchSamplesRef.current.length < 300) pitchSamplesRef.current.push(hz);
+            }
+          }
+          try { recognizerRef.current.acceptWaveform(e.inputBuffer); } catch (err) {}
+        };
         source.connect(processor);
         processor.connect(audioContext.destination);
         setupAudioAnalysis(audioContext, source);
@@ -608,6 +763,7 @@ export default function TranscriptTest() {
         azureRecognizerRef.current = recognizer;
 
         recognizer.recognized = (s, e) => {
+          if (speakingRef.current) return;
           if (e.result.reason === SpeechSDK.ResultReason.RecognizedSpeech && e.result.text) {
             try {
               const j = JSON.parse(e.result.json);
@@ -619,9 +775,12 @@ export default function TranscriptTest() {
             } catch (err) {}
             const text = e.result.text;
             setCurrentGloss(text.toUpperCase());
+            playMouth(wordsFromText(text, Math.max(0.8, (Number(e.result.duration) || 0) / 1e7 || text.length * 0.085)));
+            const th = detectThreat(text);
+            if (th && safetyRef.current.threatAlerts) raiseThreat(Math.random().toString(36).substring(2), text, th.phrase);
             const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             setEntries((prev) => {
-              const updated = [...prev, { id: Math.random().toString(36).substring(2), speaker: `${activeSpeakerRef.current} (Cloud)`, text, timestamp: now }];
+              const updated = [...prev, { id: Math.random().toString(36).substring(2), speaker: `${activeSpeakerRef.current} (Cloud)`, text, timestamp: now, rude: hasProfanity(text), threat: !!detectThreat(text) }];
               localStorage.setItem('motion_transcript_entries', JSON.stringify(updated));
               return updated;
             });
@@ -647,7 +806,10 @@ export default function TranscriptTest() {
     if (provider === 'vosk' && processorRef.current) {
       processorRef.current.disconnect();
       processorRef.current = null;
-      // Ask the recognizer for the words it is still holding, so the last sentence is not lost.
+      // Always empty the engine so no half-heard noise stays inside it. The words it gives back are kept
+      // only when someone was clearly speaking just before Stop; otherwise they are noise and are dropped.
+      const spokeJustNow = performance.now() - lastSpeechAtRef.current < 2000;
+      discardResultsUntilRef.current = spokeJustNow ? 0 : performance.now() + 1500;
       try { recognizerRef.current?.retrieveFinalResult(); } catch (e) { /* nothing pending */ }
     }
     if (provider === 'azure' && azureRecognizerRef.current) {
@@ -661,24 +823,26 @@ export default function TranscriptTest() {
     setStatus('Engine Ready!');
   };
 
-  const fullText = entries.map(e => e.text).join(' ');
+  const fullText = entries.filter(e => e.speaker !== 'You').map(e => e.text).join(' ');
   const vowels = fullText.toLowerCase().match(/[aeiou]/g)?.length || 0;
   const consonants = fullText.toLowerCase().match(/[bcdfghjklmnpqrstvwxyz]/g)?.length || 0;
 
+  const exportText = (e: TranscriptEntry) => (safetyRef.current.hideRude && e.rude ? maskProfanity(e.text) : e.text);
+
   const downloadTxt = () => {
-    const f = entries.map(e => `[${e.timestamp}] ${e.speaker}: ${e.text}`).join('\n');
+    const f = entries.map(e => `[${e.timestamp}] ${e.speaker}: ${exportText(e)}`).join('\n');
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([f], { type: 'text/plain' }));
     a.download = `motion-${Date.now()}.txt`; document.body.appendChild(a); a.click(); document.body.removeChild(a);
   };
 
   const downloadJson = () => {
-    const d = { timestamp: new Date().toISOString(), entries, analysis: { vowels, consonants, avgConfidence, bpm } };
+    const d = { timestamp: new Date().toISOString(), entries: entries.map(e => ({ ...e, text: exportText(e) })), analysis: { vowels, consonants, avgConfidence, bpm } };
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' }));
     a.download = `motion-${Date.now()}.json`; document.body.appendChild(a); a.click(); document.body.removeChild(a);
   };
 
   const shareTranscript = async () => {
-    const f = entries.map(e => `[${e.timestamp}] ${e.speaker}: ${e.text}`).join('\n');
+    const f = entries.map(e => `[${e.timestamp}] ${e.speaker}: ${exportText(e)}`).join('\n');
     if (navigator.share) { try { await navigator.share({ title: 'Motion Transcript', text: f }); } catch (e) {} }
     else { navigator.clipboard.writeText(f); alert('Copied to clipboard!'); }
   };
@@ -688,296 +852,821 @@ export default function TranscriptTest() {
     confidenceSumRef.current = 0; confidenceCountRef.current = 0; setAvgConfidence(null); setBpm(null); setCurrentGloss('READY');
   };
 
+  const changeCaptionSize = (delta: number) => {
+    const next = Math.min(CAPTION_SIZES.length - 1, Math.max(0, captionSize + delta));
+    setCaptionSize(next);
+    try { localStorage.setItem('motion_caption_size', String(next)); } catch { /* storage unavailable */ }
+  };
+
+  const addReplyEntry = (text: string) => {
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const entry: TranscriptEntry = { id: Math.random().toString(36).substring(2), speaker: 'You', text, timestamp: now };
+    setEntries((prev) => {
+      const updated = [...prev, entry];
+      try { localStorage.setItem('motion_transcript_entries', JSON.stringify(updated)); } catch { /* storage unavailable */ }
+      return updated;
+    });
+  };
+
+  const showReply = () => {
+    const text = draft.trim();
+    if (!text) return;
+    addReplyEntry(text);
+    setDraft('');
+    setShowing(text);
+  };
+
+  const saveVoice = (kind: VoiceKind, name: string, pitch: number, rate: number) => {
+    try {
+      localStorage.setItem('motion_voice_kind', kind);
+      localStorage.setItem('motion_voice_name', name);
+      localStorage.setItem('motion_voice_pitch', String(pitch));
+      localStorage.setItem('motion_voice_rate', String(rate));
+    } catch { /* storage unavailable */ }
+  };
+  const chooseVoiceKind = (kind: VoiceKind) => {
+    let name = '';
+    let pitch = 1;
+    if (kind !== 'default') {
+      const v = pickVoice(voices, kind, navigator.language || 'en-US');
+      name = v ? v.name : '';
+      pitch = pitchFor(kind, v);
+    }
+    setVoiceKind(kind);
+    setVoiceName(name);
+    setVoicePitch(pitch);
+    saveVoice(kind, name, pitch, voiceRate);
+  };
+  const makeUtterance = (text: string) => {
+    const u = new SpeechSynthesisUtterance(text);
+    const v = voices.find((x) => x.name === voiceName);
+    if (v) { u.voice = v; u.lang = v.lang; }
+    u.pitch = voicePitch;
+    u.rate = voiceRate;
+    return u;
+  };
+  const testVoice = () => {
+    if (!canSpeak) return;
+    const u = makeUtterance('Hello, this is how I will sound.');
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+  };
+
+  const speakReply = () => {
+    const text = draft.trim();
+    if (!text || !canSpeak) return;
+    addReplyEntry(text);
+    setDraft('');
+    playMouth(wordsFromText(text, Math.max(0.8, text.length * 0.08)));
+    const id = ++speakIdRef.current;
+    const release = (delay: number) => window.setTimeout(() => { if (speakIdRef.current === id) speakingRef.current = false; }, delay);
+    const u = makeUtterance(text);
+    u.onend = () => release(800);
+    u.onerror = () => release(800);
+    speakingRef.current = true;
+    release(text.length * 90 + 3000); // safety: never leave the microphone muted if the phone never reports the end
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+  };
+
+  const savePhrases = (next: string[]) => {
+    setPhrases(next);
+    try { localStorage.setItem(PHRASES_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
+  };
+  const savePhrase = () => {
+    const text = draft.trim();
+    if (!text || phrases.includes(text)) return;
+    savePhrases([...phrases, text].slice(-30));
+  };
+  const removePhrase = (p: string) => savePhrases(phrases.filter((x) => x !== p));
+
+  // How loud the sound is right now, compared with the room's usual background (0 = nothing, 1 = loud).
+  const getMicLevel = () => {
+    const an = analyserRef.current;
+    if (!an || !recording || speakingRef.current) return 0;
+    const n = an.fftSize;
+    const buf = new Float32Array(n); // fine-grained samples, the same scale the noise filter uses
+    an.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / n);
+    let floor = levelFloorRef.current;
+    if (floor === 0) floor = rms;
+    else if (rms < floor) floor = floor * 0.9 + rms * 0.1;               // quieter: follow down
+    else if (rms < floor * 2) floor += (rms - floor) * 0.01;             // slowly rising background: follow up
+    floor = Math.max(floor, 0.0004);
+    levelFloorRef.current = floor;
+    if (rms < 0.004) return 0;                                           // too quiet to be speech
+    return Math.min(1, Math.max(0, (rms / floor - gateRef.current) / 6));
+  };
+
+  const mouthSpeed = practiceSlow ? 0.5 : 1;
+  const playPractice = () => {
+    const t = practiceText.trim();
+    if (!t) return;
+    playMouth(wordsFromText(t, Math.max(0.6, t.replace(/\s+/g, ' ').length * 0.085)), mouthSpeed);
+  };
+  const replayMouth = () => {
+    if (mouthPlay) setMouthPlay({ ...mouthPlay, id: Math.random(), at: Date.now(), speed: mouthSpeed });
+  };
+
+  const confirmThreat = (yes: boolean) => {
+    if (!threat) return;
+    if (!yes) { setThreat(null); return; }
+    setThreat({ ...threat, confirmed: true });
+    setHelpLoc('');
+    // Find the location now, so the message is ready when the person taps it.
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => setHelpLoc(`https://maps.google.com/?q=${pos.coords.latitude.toFixed(5)},${pos.coords.longitude.toFixed(5)}`),
+        () => setHelpLoc(''),
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
+      );
+    }
+  };
+  const helpBody = helpMessage(threat ? threat.text : '', helpLoc, new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+  const bigAction = `flex min-h-[52px] items-center justify-center gap-2 rounded-xl px-4 text-base font-bold transition ${focusRing}`;
+
+  const canStart = provider === 'azure' || isReady;
+  const statusTone = recording
+    ? 'border-red-500/40 bg-red-500/10 text-red-200'
+    : isReady
+      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+      : 'border-amber-500/40 bg-amber-500/10 text-amber-200';
+  const statusDot = recording ? 'bg-red-400' : isReady ? 'bg-emerald-400' : 'bg-amber-400';
+
   return (
-    <div 
-      role="main" 
-      aria-label="Motion Accessibility Application"
-      style={{
-        padding: '1.25rem',
-        maxWidth: '750px',
-        margin: '0 auto',
-        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        boxSizing: 'border-box',
-        width: '100%',
-        backgroundColor: '#0b0f19',
-        color: '#f8fafc',
-        minHeight: '100vh'
-      }}
-    >
-      <style>{`
-        @keyframes pulse { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.15); opacity: 0.7; } 100% { transform: scale(1); opacity: 1; } }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
-        .mic-recording { animation: pulse 1.5s infinite ease-in-out; color: #ef4444; }
-        .panel-fade { animation: fadeIn 0.25s ease-in-out; }
-        .motion-btn { transition: all 0.2s ease; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 0.4rem; font-weight: 700; font-size: 0.95rem; border-radius: 0.375rem; border: 2px solid transparent; min-height: 48px; padding: 0.6rem 1rem; color: #ffffff; }
-        .motion-btn:hover:not(:disabled) { filter: brightness(1.2); transform: translateY(-1px); border-color: #38bdf8; }
-        .motion-btn:focus-visible { outline: 3px solid #38bdf8; outline-offset: 2px; }
-        .motion-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-      `}</style>
+    <div role="main" aria-label="Motion Accessibility Application" className="min-h-screen bg-slate-950 font-sans text-slate-100">
+      <div className="mx-auto w-full max-w-3xl px-4 pb-28 pt-4 md:pb-10">
+        {/* Header */}
+        <header className="mb-4 flex items-center gap-3">
+          <span
+            className={`flex h-11 w-11 items-center justify-center rounded-xl ${
+              recording ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/15 text-emerald-400'
+            }`}
+          >
+            <Mic className={`h-6 w-6 ${recording ? 'animate-pulse motion-reduce:animate-none' : ''}`} aria-hidden="true" />
+          </span>
+          <div>
+            <h1 className="text-xl font-bold leading-tight tracking-tight">Motion</h1>
+            <p className="text-xs text-slate-400">Speech made visible, by VisionAce</p>
+          </div>
+        </header>
 
-      {/* Header & Mode Carousel */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <span style={{ fontSize: '2rem' }} aria-hidden="true" className={recording ? 'mic-recording' : ''}>🎤</span>
-          <h2 style={{ fontSize: '1.5rem', fontWeight: '700', margin: 0, color: '#f8fafc', letterSpacing: '-0.025em' }}>Motion</h2>
-        </div>
-
-        {/* Icon + Tooltip Mode Navigation with Keyboard shortcut indicators */}
-        <nav aria-label="App Modes" style={{ background: '#131c31', padding: '0.3rem', borderRadius: '0.5rem', display: 'flex', gap: '0.3rem', border: '1px solid #1e293b' }}>
-          {[
-            { id: 'sign', icon: '🤟', label: 'Sign', shortcut: 'Alt+1' },
-            { id: 'avatar', icon: '🤖', label: 'Avatar', shortcut: 'Alt+2' },
-            { id: 'dance', icon: '💃', label: 'Dance', shortcut: 'Alt+3' },
-            { id: 'text', icon: '📝', label: 'Text', shortcut: 'Alt+4' },
-            { id: 'community', icon: '🌐', label: 'Community', badge: 'SOON', shortcut: 'Alt+5' }
-          ].map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setAppMode(m.id as any)}
-              aria-label={`${m.label} mode. Shortcut: ${m.shortcut}`}
-              title={`${m.label} Mode (${m.shortcut})`}
-              className="motion-btn"
-              style={{
-                background: appMode === m.id ? '#0284c7' : 'transparent',
-                padding: '0.4rem 0.75rem',
-                fontSize: '0.875rem',
-                minHeight: '44px'
-              }}
-            >
-              <span aria-hidden="true">{m.icon}</span>
-              <span>{m.label}</span>
-              {m.badge && <span style={{ fontSize: '0.55rem', background: '#0369a1', padding: '0.1rem 0.25rem', borderRadius: '0.2rem', marginLeft: '0.1rem' }}>{m.badge}</span>}
-            </button>
-          ))}
+        {/* Mode navigation: bottom bar on phones, top bar on wider screens */}
+        <nav
+          aria-label="App modes"
+          className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur md:static md:mb-4 md:rounded-2xl md:border md:bg-slate-900 md:p-1.5"
+        >
+          <ul className="mx-auto grid max-w-3xl grid-cols-5 gap-1 md:flex">
+            {MODES.map((m) => {
+              const on = appMode === m.id;
+              return (
+                <li key={m.id} className="md:flex-1">
+                  <button
+                    type="button"
+                    onClick={() => setAppMode(m.id)}
+                    aria-current={on ? 'page' : undefined}
+                    aria-label={`${m.label} mode. Shortcut: ${m.shortcut}`}
+                    title={`${m.label} (${m.shortcut})`}
+                    className={`flex min-h-[56px] w-full flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[11px] font-semibold transition md:min-h-[44px] md:flex-row md:gap-2 md:text-sm ${focusRing} ${
+                      on ? 'bg-emerald-500/15 text-emerald-300' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
+                    }`}
+                  >
+                    <m.Icon className="h-5 w-5" aria-hidden="true" />
+                    <span>{m.label}</span>
+                    {m.badge && (
+                      <span className="hidden rounded bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-sky-300 md:inline">
+                        {m.badge}
+                      </span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         </nav>
-      </div>
 
-      {/* Contextual Settings Bar */}
-      {appMode !== 'community' && (
-        <div style={{
-          marginBottom: '1rem',
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '1rem',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          background: '#131c31',
-          padding: '0.75rem 1rem',
-          borderRadius: '0.5rem',
-          border: '1px solid #1e293b'
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-            <div>
-              <span style={{ color: '#cbd5e1', fontWeight: '600', fontSize: '0.875rem', marginRight: '0.5rem' }}>Engine:</span>
-              <label style={{ color: '#f8fafc', cursor: 'pointer', fontSize: '0.875rem', marginRight: '0.75rem' }}>
-                <input type="radio" name="provider" value="vosk" checked={provider === 'vosk'} onChange={() => setProvider('vosk')} disabled={recording} aria-label="Use Vosk offline engine" /> Vosk (Offline)
-              </label>
-              <label style={{ color: '#f8fafc', cursor: 'pointer', fontSize: '0.875rem' }}>
-                <input type="radio" name="provider" value="azure" checked={provider === 'azure'} onChange={() => setProvider('azure')} disabled={recording} aria-label="Use Azure cloud engine" /> Azure (Cloud)
-              </label>
+        {appMode !== 'community' && (
+          <>
+            {/* Status */}
+            <div role="status" aria-live="polite" className={`mb-4 flex items-start gap-3 rounded-xl border px-4 py-3 text-sm font-semibold ${statusTone}`}>
+              <span
+                aria-hidden="true"
+                className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${statusDot} ${recording ? 'animate-pulse motion-reduce:animate-none' : ''}`}
+              />
+              <span>{status}</span>
             </div>
 
-            {appMode === 'text' && (
-              <div>
-                <span style={{ color: '#cbd5e1', fontWeight: '600', fontSize: '0.875rem', marginRight: '0.5rem' }}>Speaker:</span>
-                <label style={{ color: '#38bdf8', cursor: 'pointer', fontSize: '0.875rem', marginRight: '0.5rem', fontWeight: '700' }}>
-                  <input type="radio" name="speaker" value="Speaker 1" checked={activeSpeaker === 'Speaker 1'} onChange={() => setActiveSpeaker('Speaker 1')} aria-label="Set active speaker to 1" /> 1
-                </label>
-                <label style={{ color: '#a78bfa', cursor: 'pointer', fontSize: '0.875rem', fontWeight: '700' }}>
-                  <input type="radio" name="speaker" value="Speaker 2" checked={activeSpeaker === 'Speaker 2'} onChange={() => setActiveSpeaker('Speaker 2')} aria-label="Set active speaker to 2" /> 2
-                </label>
+            {/* Settings */}
+            <section aria-label="Settings" className="mb-4 flex flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+                <Segmented<'vosk' | 'azure'>
+                  label="Engine"
+                  value={provider}
+                  onChange={setProvider}
+                  disabled={recording}
+                  options={[
+                    { value: 'vosk', label: 'Offline', aria: 'Use Vosk offline engine', icon: <WifiOff className="h-4 w-4" aria-hidden="true" />, activeClass: 'bg-emerald-500/20 text-emerald-300' },
+                    { value: 'azure', label: 'Cloud', aria: 'Use Azure cloud engine', icon: <Cloud className="h-4 w-4" aria-hidden="true" />, activeClass: 'bg-sky-500/20 text-sky-300' },
+                  ]}
+                />
+                {appMode === 'text' && (
+                  <Segmented<'Speaker 1' | 'Speaker 2'>
+                    label="Speaker"
+                    value={activeSpeaker}
+                    onChange={setActiveSpeaker}
+                    options={[
+                      { value: 'Speaker 1', label: '1', aria: 'Set active speaker to 1', activeClass: 'bg-sky-500/20 text-sky-300' },
+                      { value: 'Speaker 2', label: '2', aria: 'Set active speaker to 2', activeClass: 'bg-violet-500/20 text-violet-300' },
+                    ]}
+                  />
+                )}
+                {appMode === 'text' && provider === 'vosk' && (
+                  <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    Noise filter
+                    <input
+                      type="range"
+                      min="1"
+                      max="6"
+                      step="0.5"
+                      value={noiseGate}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        setNoiseGate(v);
+                        try { localStorage.setItem('motion_noise_gate', String(v)); } catch { /* storage unavailable */ }
+                      }}
+                      aria-label="Noise filter strength. Higher ignores more quiet sounds."
+                      className="w-28 accent-emerald-500"
+                    />
+                    <span className="w-8 normal-case text-slate-200">{noiseGate <= 1 ? 'Off' : noiseGate}</span>
+                  </label>
+                )}
+              </div>
+              {appMode === 'dance' && (
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedControls(!showAdvancedControls)}
+                  aria-expanded={showAdvancedControls}
+                  className={`flex min-h-[40px] items-center gap-2 rounded-xl border px-3 text-sm font-semibold ${focusRing} ${
+                    showAdvancedControls ? 'border-sky-500 bg-sky-500/15 text-sky-200' : 'border-slate-700 bg-slate-950 text-slate-200'
+                  }`}
+                >
+                  <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+                  Advanced
+                </button>
+              )}
+            </section>
+
+            {/* Dance: advanced controls */}
+            {appMode === 'dance' && showAdvancedControls && (
+              <section className="mb-4 rounded-2xl border border-sky-500/40 bg-slate-900 p-4 text-sm text-slate-200">
+                <h3 className="mb-3 font-bold text-sky-300">Dance and haptic settings</h3>
+                <div className="mb-4 flex flex-wrap gap-x-5 gap-y-3">
+                  {[
+                    { label: 'Bass visuals', on: showBassVisuals, set: setShowBassVisuals },
+                    { label: 'Mid visuals', on: showMidVisuals, set: setShowMidVisuals },
+                    { label: 'Treble visuals', on: showTrebleVisuals, set: setShowTrebleVisuals },
+                    { label: 'Haptics', on: hapticsEnabled, set: setHapticsEnabled },
+                    { label: 'Metronome', on: metronomeEnabled, set: setMetronomeEnabled },
+                  ].map((c) => (
+                    <label key={c.label} className="flex min-h-[32px] cursor-pointer items-center gap-2">
+                      <input type="checkbox" className="h-4 w-4 accent-emerald-500" checked={c.on} onChange={(e) => c.set(e.target.checked)} />
+                      {c.label}
+                    </label>
+                  ))}
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-1 flex justify-between"><span>Haptic strength</span><strong>{hapticIntensity}%</strong></span>
+                    <input type="range" min="50" max="200" value={hapticIntensity} onChange={(e) => setHapticIntensity(Number(e.target.value))} aria-label="Haptic intensity slider" className="w-full accent-emerald-500" />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 flex justify-between"><span>Visual size</span><strong>{visualIntensity}%</strong></span>
+                    <input type="range" min="50" max="200" value={visualIntensity} onChange={(e) => setVisualIntensity(Number(e.target.value))} aria-label="Visual scale brightness slider" className="w-full accent-emerald-500" />
+                  </label>
+                </div>
+              </section>
+            )}
+
+            {/* Recording controls */}
+            <section aria-label="Recording controls" className="mb-4 rounded-2xl border border-slate-800 bg-slate-900 p-3">
+              <button
+                type="button"
+                onClick={recording ? stopRecording : startRecording}
+                disabled={!recording && !canStart}
+                aria-label={recording ? 'Stop Recording' : 'Start Recording'}
+                className={`flex min-h-[64px] w-full items-center justify-center gap-3 rounded-xl text-lg font-bold transition disabled:cursor-not-allowed ${focusRing} ${
+                  recording
+                    ? 'bg-red-600 text-white hover:bg-red-500'
+                    : canStart
+                      ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
+                      : 'bg-slate-800 text-slate-300'
+                }`}
+              >
+                {recording ? (
+                  <>
+                    <Square className="h-6 w-6" aria-hidden="true" /> Stop listening
+                  </>
+                ) : canStart ? (
+                  <>
+                    <Play className="h-6 w-6" aria-hidden="true" /> Start listening
+                  </>
+                ) : (
+                  <>
+                    <Loader2 className="h-6 w-6 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Loading speech model...
+                  </>
+                )}
+              </button>
+              <div className="mt-2 grid grid-cols-4 gap-2">
+                <button type="button" onClick={shareTranscript} disabled={entries.length === 0} className={actionBtn} aria-label="Share Transcript">
+                  <Share2 className="h-4 w-4" aria-hidden="true" /> Share
+                </button>
+                <button type="button" onClick={downloadTxt} disabled={entries.length === 0} className={actionBtn} aria-label="Download as Text File">
+                  <Download className="h-4 w-4" aria-hidden="true" /> .txt
+                </button>
+                <button type="button" onClick={downloadJson} disabled={entries.length === 0} className={actionBtn} aria-label="Download as JSON File">
+                  <Download className="h-4 w-4" aria-hidden="true" /> .json
+                </button>
+                <button type="button" onClick={clearTranscript} className={actionBtn} aria-label="Clear Transcript">
+                  <Trash2 className="h-4 w-4" aria-hidden="true" /> Clear
+                </button>
+              </div>
+            </section>
+          </>
+        )}
+
+        {/* ACTIVE MODES */}
+        {appMode === 'sign' && (
+          <Panel
+            icon={<Hand className="h-5 w-5 text-amber-300" aria-hidden="true" />}
+            title="Sign language"
+            badge={`GLOSS: ${currentGloss}`}
+            badgeLabel={`Current Gloss: ${currentGloss}`}
+            badgeClass="bg-amber-900/60 text-amber-200"
+          >
+            <div ref={signContainerRef} aria-label="3D Sign Language Render Canvas" tabIndex={0} className="w-full bg-slate-950" style={{ height: '260px' }} />
+          </Panel>
+        )}
+
+        {appMode === 'avatar' && (
+          <Panel
+            icon={<Smile className="h-5 w-5 text-emerald-300" aria-hidden="true" />}
+            title="Avatar: mouth shapes"
+            badge={`VISEME: ${currentViseme}`}
+            badgeLabel={`Current Viseme: ${currentViseme}`}
+            badgeClass="bg-emerald-900/60 text-emerald-200"
+          >
+            <MouthAvatar play={mouthPlay} getLevel={getMicLevel} onViseme={setCurrentViseme} tone={avatarTone} />
+            <div className="space-y-3 border-t border-slate-800 p-3">
+              <div className="flex flex-wrap gap-2">
+                <label htmlFor="mouth-practice" className="sr-only">Type a word or sentence to see the mouth say it</label>
+                <input
+                  id="mouth-practice"
+                  value={practiceText}
+                  onChange={(e) => setPracticeText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') playPractice(); }}
+                  placeholder="Type a word to see the mouth say it"
+                  className={`min-h-[44px] min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 text-base text-slate-50 placeholder-slate-500 ${focusRing}`}
+                />
+                <button
+                  type="button"
+                  onClick={playPractice}
+                  disabled={!practiceText.trim()}
+                  className={`flex min-h-[44px] items-center gap-2 rounded-xl bg-emerald-500 px-4 text-sm font-bold text-slate-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40 ${focusRing}`}
+                >
+                  <Play className="h-4 w-4" aria-hidden="true" /> Play
+                </button>
+                <button
+                  type="button"
+                  onClick={replayMouth}
+                  disabled={!mouthPlay}
+                  aria-label="Replay the last words on the mouth"
+                  className={`flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700 bg-slate-950 px-3 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40 ${focusRing}`}
+                >
+                  <RotateCcw className="h-4 w-4" aria-hidden="true" /> Replay
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={practiceSlow}
+                  onClick={() => setPracticeSlow(!practiceSlow)}
+                  className={`min-h-[40px] rounded-xl border px-3 text-sm font-semibold ${focusRing} ${
+                    practiceSlow ? 'border-sky-500 bg-sky-500/15 text-sky-200' : 'border-slate-700 bg-slate-950 text-slate-300'
+                  }`}
+                >
+                  Slow motion: {practiceSlow ? 'On' : 'Off'}
+                </button>
+                <div role="radiogroup" aria-label="Skin tone" className="flex items-center gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">Skin</span>
+                  {TONE_KEYS.map((k) => (
+                    <button
+                      key={k}
+                      type="button"
+                      role="radio"
+                      aria-checked={avatarTone === k}
+                      aria-label={`${TONES[k].label} skin tone`}
+                      onClick={() => {
+                        setAvatarTone(k);
+                        try { localStorage.setItem('motion_avatar_tone', k); } catch { /* storage unavailable */ }
+                      }}
+                      className={`h-9 w-9 rounded-full border-2 ${focusRing} ${avatarTone === k ? 'border-white' : 'border-slate-700'}`}
+                      style={{ background: TONES[k].skin[0] }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </Panel>
+        )}
+
+        {appMode === 'dance' && (
+          <Panel
+            icon={<Music className="h-5 w-5 text-sky-300" aria-hidden="true" />}
+            title="Dance: rhythm guidance"
+            badge={isBeat ? `BEAT (${bpm || '---'} BPM)` : 'RHYTHM IDLE'}
+            badgeLabel={isBeat ? `Beat detected at ${bpm || '---'} BPM` : 'Rhythm idle'}
+            badgeClass={isBeat ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-300'}
+          >
+            <canvas ref={canvasRef} width={700} height={240} aria-label="Dance rhythm and visualizer canvas" tabIndex={0} className="block w-full bg-slate-950" style={{ height: '240px' }} />
+          </Panel>
+        )}
+
+        {appMode === 'text' && (
+          <section aria-label="Captions">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Live captions</h2>
+              <div role="group" aria-label="Caption text size" className="flex items-center gap-1">
+                <button type="button" onClick={() => changeCaptionSize(-1)} disabled={captionSize === 0} aria-label="Smaller text" className={`flex h-10 w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-200 disabled:opacity-40 ${focusRing}`}>
+                  <Minus className="h-4 w-4" aria-hidden="true" />
+                </button>
+                <Type className="h-5 w-5 text-slate-400" aria-hidden="true" />
+                <button type="button" onClick={() => changeCaptionSize(1)} disabled={captionSize === CAPTION_SIZES.length - 1} aria-label="Larger text" className={`flex h-10 w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-200 disabled:opacity-40 ${focusRing}`}>
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+
+            {threat && (
+              <div role="alert" className="mb-3 rounded-2xl border-2 border-red-500 bg-red-500/10 p-4">
+                <div className="flex items-center gap-2 text-red-200">
+                  <ShieldAlert className="h-6 w-6" aria-hidden="true" />
+                  <h3 className="text-lg font-bold">Possible threat heard</h3>
+                </div>
+                <p className="mt-2 text-lg font-semibold text-slate-50">&ldquo;{threat.text}&rdquo;</p>
+                {threat.confirmed === null ? (
+                  <>
+                    <p className="mt-2 text-sm text-slate-200">Motion can make mistakes. Did someone threaten you?</p>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      <button type="button" onClick={() => confirmThreat(true)} className={`${bigAction} bg-red-600 text-white hover:bg-red-500`}>
+                        Yes, I feel threatened
+                      </button>
+                      <button type="button" onClick={() => confirmThreat(false)} className={`${bigAction} border border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800`}>
+                        No, a mistake or a joke
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-3 space-y-2">
+                    <p className="text-sm text-slate-200">Move toward other people and light. You do not have to answer or argue.</p>
+                    {safety.contactPhone ? (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <a href={smsLink(safety.contactPhone, helpBody)} className={`${bigAction} bg-red-600 text-white hover:bg-red-500`}>
+                          <MessageSquare className="h-5 w-5" aria-hidden="true" /> Text {safety.contactName || 'my contact'} with my location
+                        </a>
+                        <a href={whatsappLink(safety.contactPhone, helpBody)} className={`${bigAction} bg-emerald-600 text-white hover:bg-emerald-500`}>
+                          <MessageSquare className="h-5 w-5" aria-hidden="true" /> WhatsApp {safety.contactName || 'my contact'}
+                        </a>
+                      </div>
+                    ) : (
+                      <button type="button" onClick={() => setSafetyOpen(true)} className={`${bigAction} w-full border border-amber-500 bg-amber-500/10 text-amber-200`}>
+                        No trusted contact saved. Add one in Safety settings below
+                      </button>
+                    )}
+                    <p className="text-xs text-slate-300">
+                      {helpLoc ? 'Your location is in the message.' : 'Finding your location. You can send now; it is added if found.'} The message opens ready to send. You tap Send.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setShowing('I am deaf and I need help. Please stay with me and call for help.')}
+                      className={`${bigAction} w-full bg-sky-500 text-slate-950 hover:bg-sky-400`}
+                    >
+                      <Maximize2 className="h-5 w-5" aria-hidden="true" /> Show &ldquo;I need help&rdquo; to people nearby
+                    </button>
+                    <a href={`tel:${safety.emergency}`} className={`${bigAction} w-full border border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800`}>
+                      <Phone className="h-5 w-5" aria-hidden="true" /> Call {safety.emergency} (a voice call, ask someone nearby to speak)
+                    </a>
+                    <button type="button" onClick={() => setThreat(null)} className={`w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-300 underline-offset-2 hover:underline ${focusRing}`}>
+                      Close this alert
+                    </button>
+                  </div>
+                )}
               </div>
             )}
-          </div>
 
-          {appMode === 'dance' && (
-            <button
-              onClick={() => setShowAdvancedControls(!showAdvancedControls)}
-              aria-expanded={showAdvancedControls}
-              className="motion-btn"
-              style={{
-                background: showAdvancedControls ? '#0284c7' : '#1e293b',
-                padding: '0.4rem 0.75rem',
-                minHeight: '38px',
-                fontSize: '0.85rem'
-              }}
+            <div
+              role="log"
+              aria-live="polite"
+              aria-label="Live transcript stream log"
+              className="h-[32vh] min-h-[190px] overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900 p-3 md:h-[320px]"
             >
-              {showAdvancedControls ? '▾ Hide Advanced Controls' : '▸ Advanced Controls'}
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Collapsible Advanced Controls Panel */}
-      {appMode === 'dance' && showAdvancedControls && (
-        <div className="panel-fade" style={{
-          background: '#131c31',
-          borderRadius: '0.5rem',
-          border: '1px solid #0284c7',
-          padding: '1rem',
-          marginBottom: '1rem',
-          color: '#e2e8f0'
-        }}>
-          <h4 style={{ margin: '0 0 0.75rem 0', fontSize: '0.95rem', color: '#38bdf8' }}>⚙️ Advanced Dance & Haptic Customization</h4>
-          <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', marginBottom: '0.75rem', fontSize: '0.875rem' }}>
-            <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem' }}><input type="checkbox" checked={showBassVisuals} onChange={(e) => setShowBassVisuals(e.target.checked)} /> 🔴 Bass Visuals</label>
-            <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem' }}><input type="checkbox" checked={showMidVisuals} onChange={(e) => setShowMidVisuals(e.target.checked)} /> 🟠 Mid Visuals</label>
-            <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem' }}><input type="checkbox" checked={showTrebleVisuals} onChange={(e) => setShowTrebleVisuals(e.target.checked)} /> 🟢 Treble Visuals</label>
-            <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem' }}><input type="checkbox" checked={hapticsEnabled} onChange={(e) => setHapticsEnabled(e.target.checked)} /> 📳 Haptics</label>
-            <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem' }}><input type="checkbox" checked={metronomeEnabled} onChange={(e) => setMetronomeEnabled(e.target.checked)} /> ⏱️ Metronome</label>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', fontSize: '0.875rem' }}>
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}><span>📳 Haptic Intensity</span><strong>{hapticIntensity}%</strong></div>
-              <input type="range" min="50" max="200" value={hapticIntensity} onChange={(e) => setHapticIntensity(Number(e.target.value))} aria-label="Haptic intensity slider" style={{ width: '100%', cursor: 'pointer' }} />
-            </div>
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}><span>✨ Visual Scale</span><strong>{visualIntensity}%</strong></div>
-              <input type="range" min="50" max="200" value={visualIntensity} onChange={(e) => setVisualIntensity(Number(e.target.value))} aria-label="Visual scale brightness slider" style={{ width: '100%', cursor: 'pointer' }} />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Screen Reader & Accessible Status Banner */}
-      {appMode !== 'community' && (
-        <div 
-          role="status" 
-          aria-live="polite"
-          style={{
-            padding: '0.75rem 1rem',
-            borderRadius: '0.375rem',
-            background: recording ? '#450a0a' : isReady ? '#064e3b' : '#451a03',
-            color: recording ? '#fca5a5' : isReady ? '#6ee7b7' : '#fcd34d',
-            fontWeight: '700',
-            fontSize: '0.9rem',
-            marginBottom: '1rem',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.75rem',
-            border: recording ? '1px solid #ef4444' : isReady ? '1px solid #10b981' : '1px solid #f59e0b'
-          }}
-        >
-          <span aria-hidden="true" style={{
-            height: '10px',
-            width: '10px',
-            borderRadius: '50%',
-            backgroundColor: recording ? '#ef4444' : isReady ? '#10b981' : '#f59e0b',
-            display: 'inline-block'
-          }} className={recording ? 'mic-recording' : ''} />
-          <span>{status}</span>
-        </div>
-      )}
-
-      {/* High-Contrast Action Toolbar */}
-      {appMode !== 'community' && (
-        <div role="region" aria-label="Recording controls" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
-          <button onClick={startRecording} disabled={(!isReady && provider === 'vosk') || recording} className="motion-btn" style={{ background: recording ? '#334155' : '#0284c7' }} aria-label="Start Recording">
-            <span aria-hidden="true">▶</span> Start
-          </button>
-          <button onClick={stopRecording} disabled={!recording} className="motion-btn" style={{ background: !recording ? '#334155' : '#dc2626' }} aria-label="Stop Recording">
-            <span aria-hidden="true">⏹</span> Stop
-          </button>
-          <button onClick={shareTranscript} disabled={entries.length === 0} className="motion-btn" style={{ background: '#0369a1' }} aria-label="Share Transcript">
-            <span aria-hidden="true">🔗</span> Share
-          </button>
-          <button onClick={downloadTxt} disabled={entries.length === 0} className="motion-btn" style={{ background: '#059669' }} aria-label="Download as Text File">
-            <span aria-hidden="true">📥</span> .txt
-          </button>
-          <button onClick={downloadJson} disabled={entries.length === 0} className="motion-btn" style={{ background: '#7c3aed' }} aria-label="Download as JSON File">
-            <span aria-hidden="true">📥</span> .json
-          </button>
-          <button onClick={clearTranscript} className="motion-btn" style={{ background: '#1e293b', color: '#f8fafc' }} aria-label="Clear Transcript">
-            <span aria-hidden="true">🗑️</span> Clear
-          </button>
-        </div>
-      )}
-
-      {/* ACTIVE MODES */}
-      {appMode === 'sign' && (
-        <div className="panel-fade" style={{ background: '#131c31', borderRadius: '0.5rem', border: '1px solid #1e293b', marginBottom: '1rem', overflow: 'hidden', textAlign: 'center' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 1rem', borderBottom: '1px solid #1e293b' }}>
-            <span style={{ fontSize: '0.9rem', color: '#fbbf24', fontWeight: '700' }}>🤟 Sign Language Mode: Visual Gesture Translation</span>
-            <span aria-label={`Current Gloss: ${currentGloss}`} style={{ padding: '0.25rem 0.6rem', borderRadius: '0.25rem', fontSize: '0.8rem', fontWeight: '800', background: '#78350f', color: '#fcd34d' }}>
-              GLOSS: {currentGloss}
-            </span>
-          </div>
-          <div ref={signContainerRef} aria-label="3D Sign Language Render Canvas" tabIndex={0} style={{ width: '100%', height: '260px', background: '#0b0f19' }} />
-        </div>
-      )}
-
-      {appMode === 'avatar' && (
-        <div className="panel-fade" style={{ background: '#131c31', borderRadius: '0.5rem', border: '1px solid #1e293b', marginBottom: '1rem', overflow: 'hidden', textAlign: 'center' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 1rem', borderBottom: '1px solid #1e293b' }}>
-            <span style={{ fontSize: '0.9rem', color: '#34d399', fontWeight: '700' }}>🤖 Avatar Mode: Smooth Damped Viseme Morphing</span>
-            <span aria-label={`Current Viseme: ${currentViseme}`} style={{ padding: '0.25rem 0.6rem', borderRadius: '0.25rem', fontSize: '0.8rem', fontWeight: '800', background: '#065f46', color: '#34d399' }}>
-              VISEME: {currentViseme}
-            </span>
-          </div>
-          <div ref={avatarContainerRef} aria-label="3D Avatar Head Render Canvas" tabIndex={0} style={{ width: '100%', height: '260px', background: '#0b0f19' }} />
-        </div>
-      )}
-
-      {appMode === 'dance' && (
-        <div className="panel-fade" style={{ background: '#131c31', borderRadius: '0.5rem', border: '1px solid #1e293b', marginBottom: '1rem', overflow: 'hidden', textAlign: 'center' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 1rem', borderBottom: '1px solid #1e293b' }}>
-            <span style={{ fontSize: '0.9rem', color: '#38bdf8', fontWeight: '700' }}>💃 Dance Mode: Visual Rhythm & Guidance</span>
-            <span aria-label={isBeat ? `Beat detected at ${bpm || '---'} BPM` : 'Rhythm idle'} style={{ padding: '0.25rem 0.6rem', borderRadius: '0.25rem', fontSize: '0.8rem', fontWeight: '800', background: isBeat ? '#dc2626' : '#1e293b', color: '#fff' }}>
-              {isBeat ? `⚡ BEAT (${bpm || '---'} BPM)` : 'RHYTHM IDLE'}
-            </span>
-          </div>
-          <canvas ref={canvasRef} width={700} height={240} aria-label="Dance rhythm and visualizer canvas" tabIndex={0} style={{ width: '100%', height: '240px', display: 'block', background: '#0b0f19' }} />
-        </div>
-      )}
-
-      {appMode === 'text' && (
-        <div className="panel-fade">
-          <div 
-            role="log" 
-            aria-live="polite" 
-            aria-label="Live transcript stream log"
-            style={{
-              height: '260px', overflowY: 'auto', background: '#131c31', color: '#38bdf8', padding: '1rem', borderRadius: '0.5rem',
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: '0.95rem', lineHeight: '1.6',
-              border: '1px solid #1e293b', boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.5)', marginBottom: '1rem'
-            }}
-          >
-            {entries.length === 0 ? (
-              <div style={{ color: '#94a3b8' }}>Multi-speaker transcript entries will appear here...</div>
-            ) : (
-              entries.map((entry) => (
-                <div key={entry.id} style={{ marginBottom: '0.75rem', borderBottom: '1px solid #1e293b', paddingBottom: '0.5rem' }}>
-                  <div style={{ fontSize: '0.8rem', color: '#cbd5e1', display: 'flex', gap: '0.5rem' }}>
-                    <span>[{entry.timestamp}]</span>
-                    <strong style={{ color: entry.speaker.includes('Speaker 1') ? '#38bdf8' : '#a78bfa' }}>{entry.speaker}</strong>
-                  </div>
-                  <div style={{ color: '#f8fafc', marginTop: '0.25rem' }}>{entry.text}</div>
+              {entries.length === 0 ? (
+                <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-slate-400">
+                  <Mic className="h-8 w-8" aria-hidden="true" />
+                  <p className="text-base">Press Start listening. What people say will appear here in large text.</p>
                 </div>
-              ))
-            )}
-            <div ref={transcriptEndRef} />
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
-            <div style={{ padding: '1rem', background: '#131c31', borderRadius: '0.5rem', border: '1px solid #1e293b', color: '#e2e8f0' }}>
-              <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '0.95rem', color: '#38bdf8' }}>📊 Phonetics & Confidence</h4>
-              <p style={{ margin: '0.25rem 0', fontSize: '0.875rem' }}>Vowels: <strong>{vowels}</strong> | Consonants: <strong>{consonants}</strong></p>
-              <p style={{ margin: '0.25rem 0', fontSize: '0.875rem' }}>Confidence: <strong>{avgConfidence !== null ? `${Math.round(avgConfidence * 100)}%` : 'Pending...'}</strong></p>
+              ) : (
+                entries.map((entry) => {
+                  const mine = entry.speaker === 'You';
+                  const one = entry.speaker.includes('Speaker 1');
+                  const edge = mine ? 'border-emerald-400' : one ? 'border-sky-400' : 'border-violet-400';
+                  const tone = mine ? 'text-emerald-300' : one ? 'text-sky-300' : 'text-violet-300';
+                  return (
+                    <article key={entry.id} className={`mb-3 rounded-xl border-l-4 bg-slate-950/70 p-3 ${edge} ${mine ? 'ml-6' : ''}`}>
+                      <div className="mb-1 flex items-center gap-2 text-xs">
+                        <strong className={tone}>{entry.speaker.replace(/\s*\((Local|Cloud)\)$/, '')}</strong>
+                        <span className="text-slate-400">{entry.timestamp}</span>
+                        {safety.voiceGuess && entry.voice && !mine && (
+                          <span title={entry.pitchHz ? `Pitch about ${entry.pitchHz} Hz. This is only a guess.` : 'Only a guess'} className="rounded-md bg-slate-800 px-2 py-0.5 text-slate-300">
+                            {VOICE_LABELS[entry.voice]}
+                          </span>
+                        )}
+                        {entry.threat && <span className="rounded-md bg-red-500/20 px-2 py-0.5 font-semibold text-red-200">Possible threat</span>}
+                      </div>
+                      <p className={`${CAPTION_SIZES[captionSize]} font-medium leading-snug text-slate-50`}>
+                        {safety.hideRude && entry.rude && !revealed[entry.id] ? maskProfanity(entry.text) : entry.text}
+                      </p>
+                      {safety.hideRude && entry.rude && (
+                        <button
+                          type="button"
+                          onClick={() => setRevealed((r) => ({ ...r, [entry.id]: !r[entry.id] }))}
+                          className={`mt-2 rounded-lg px-1 py-1 text-xs font-semibold text-sky-300 underline-offset-2 hover:underline ${focusRing}`}
+                        >
+                          {revealed[entry.id] ? 'Hide rude words' : 'Rude words hidden. Tap to show'}
+                        </button>
+                      )}
+                    </article>
+                  );
+                })
+              )}
+              <div ref={transcriptEndRef} />
             </div>
-          </div>
-        </div>
-      )}
 
-      {appMode === 'community' && (
-        <div className="panel-fade" style={{ background: '#131c31', borderRadius: '0.75rem', border: '1px solid #1e293b', padding: '2.5rem 1.5rem', textAlign: 'center', color: '#f8fafc' }}>
-          <span style={{ fontSize: '3rem' }} aria-hidden="true">🌐</span>
-          <h3 style={{ margin: '0.75rem 0 0.5rem 0', color: '#38bdf8', fontSize: '1.35rem' }}>Motion Social Hub (Coming Soon)</h3>
-          <p style={{ fontSize: '0.95rem', color: '#cbd5e1', maxWidth: '480px', margin: '0 auto 1.5rem auto', lineHeight: '1.5' }}>
-            A dedicated social space for Deaf, Hard-of-Hearing, and Mute creators to connect, share sign-language video reels, collaborate in creator clubs, and join live sign hangouts.
+            <div className="mt-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Your reply</h3>
+                <button
+                  type="button"
+                  onClick={() => setEditPhrases(!editPhrases)}
+                  className={`rounded-lg px-2 py-1 text-xs font-semibold text-sky-300 underline-offset-2 hover:underline ${focusRing}`}
+                >
+                  {editPhrases ? 'Done' : 'Edit phrases'}
+                </button>
+              </div>
+              <div className="-mx-1 mb-2 flex gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none] md:flex-wrap [&::-webkit-scrollbar]:hidden">
+                {phrases.map((p) => (
+                  <span key={p} className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setDraft(p)}
+                      aria-label={`Use phrase: ${p}`}
+                      className={`min-h-[40px] rounded-full border border-slate-700 bg-slate-950 px-4 text-sm font-medium text-slate-100 hover:bg-slate-800 ${focusRing}`}
+                    >
+                      {p}
+                    </button>
+                    {editPhrases && (
+                      <button
+                        type="button"
+                        onClick={() => removePhrase(p)}
+                        aria-label={`Remove phrase: ${p}`}
+                        className={`flex h-9 w-9 items-center justify-center rounded-full bg-red-500/20 text-red-300 hover:bg-red-500/30 ${focusRing}`}
+                      >
+                        <X className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    )}
+                  </span>
+                ))}
+              </div>
+              <label htmlFor="reply-draft" className="sr-only">Type your reply</label>
+              <textarea
+                id="reply-draft"
+                rows={2}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); showReply(); } }}
+                enterKeyHint="send"
+                placeholder="Type what you want to say..."
+                className={`w-full resize-none rounded-xl border border-slate-700 bg-slate-950 p-3 text-lg text-slate-50 placeholder-slate-500 ${focusRing}`}
+              />
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={showReply}
+                  disabled={!draft.trim()}
+                  className={`flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-sky-500 text-sm font-bold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-40 ${focusRing}`}
+                >
+                  <Maximize2 className="h-4 w-4" aria-hidden="true" /> Show
+                </button>
+                <button
+                  type="button"
+                  onClick={speakReply}
+                  disabled={!draft.trim() || !canSpeak}
+                  title={canSpeak ? 'Say it out loud' : 'Speaking is not available on this device'}
+                  className={`flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-emerald-500 text-sm font-bold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40 ${focusRing}`}
+                >
+                  <Volume2 className="h-4 w-4" aria-hidden="true" /> Speak
+                </button>
+                <button
+                  type="button"
+                  onClick={savePhrase}
+                  disabled={!draft.trim() || phrases.includes(draft.trim())}
+                  className={`flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-950 text-sm font-semibold text-slate-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40 ${focusRing}`}
+                >
+                  <Plus className="h-4 w-4" aria-hidden="true" /> Save phrase
+                </button>
+              </div>
+
+              <div className="mt-3 border-t border-slate-800 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setVoiceOpen(!voiceOpen)}
+                  aria-expanded={voiceOpen}
+                  className={`flex w-full items-center justify-between rounded-lg px-1 py-1 text-left text-sm font-semibold text-slate-200 ${focusRing}`}
+                >
+                  <span>Speaking voice: {voiceKind === 'default' ? 'phone default' : voiceKind}</span>
+                  <span className="text-xs font-semibold text-sky-300">{voiceOpen ? 'Hide' : 'Change'}</span>
+                </button>
+                {voiceOpen && (
+                  <div className="mt-3 space-y-3 text-sm text-slate-200">
+                    {!canSpeak && <p className="text-amber-300">This device cannot speak aloud.</p>}
+                    <div role="radiogroup" aria-label="Voice type" className="flex flex-wrap gap-2">
+                      {([['default', 'Phone default'], ['female', 'Female voice'], ['male', 'Male voice']] as [VoiceKind, string][]).map(([k, label]) => (
+                        <button
+                          key={k}
+                          type="button"
+                          role="radio"
+                          aria-checked={voiceKind === k}
+                          onClick={() => chooseVoiceKind(k)}
+                          className={`min-h-[40px] rounded-xl border px-3 font-semibold ${focusRing} ${
+                            voiceKind === k ? 'border-emerald-500 bg-emerald-500/15 text-emerald-200' : 'border-slate-700 bg-slate-950 text-slate-300'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Choose a voice</span>
+                      <select
+                        value={voiceName}
+                        onChange={(e) => {
+                          setVoiceName(e.target.value);
+                          saveVoice(voiceKind, e.target.value, voicePitch, voiceRate);
+                        }}
+                        className={`min-h-[44px] w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-slate-100 ${focusRing}`}
+                      >
+                        <option value="">Phone default</option>
+                        {voices.map((v) => {
+                          const g = guessVoiceGender(v.name);
+                          return (
+                            <option key={v.name + v.lang} value={v.name}>
+                              {v.name} ({v.lang}){g !== 'unknown' ? `, ${g}` : ''}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </label>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-1 flex justify-between"><span>Pitch</span><strong>{voicePitch.toFixed(2)}</strong></span>
+                        <input type="range" min="0.5" max="1.8" step="0.05" value={voicePitch} aria-label="Voice pitch"
+                          onChange={(e) => { const v = Number(e.target.value); setVoicePitch(v); saveVoice(voiceKind, voiceName, v, voiceRate); }}
+                          className="w-full accent-emerald-500" />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 flex justify-between"><span>Speed</span><strong>{voiceRate.toFixed(2)}</strong></span>
+                        <input type="range" min="0.6" max="1.4" step="0.05" value={voiceRate} aria-label="Voice speed"
+                          onChange={(e) => { const v = Number(e.target.value); setVoiceRate(v); saveVoice(voiceKind, voiceName, voicePitch, v); }}
+                          className="w-full accent-emerald-500" />
+                      </label>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={testVoice}
+                      disabled={!canSpeak}
+                      className={`flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700 bg-slate-950 px-4 font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-40 ${focusRing}`}
+                    >
+                      <Volume2 className="h-4 w-4" aria-hidden="true" /> Test this voice
+                    </button>
+                    <p className="text-xs text-slate-400">
+                      The voices come from your phone or computer, and the male and female labels are guesses from each voice's name.
+                      If none sounds right, add voices in the system's text-to-speech settings.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
+              <button
+                type="button"
+                onClick={() => setSafetyOpen(!safetyOpen)}
+                aria-expanded={safetyOpen}
+                className={`flex w-full items-center justify-between rounded-lg px-1 py-1 text-left text-sm font-semibold text-slate-200 ${focusRing}`}
+              >
+                <span className="flex items-center gap-2"><ShieldAlert className="h-4 w-4 text-red-300" aria-hidden="true" /> Safety and voice guess</span>
+                <span className="text-xs font-semibold text-sky-300">{safetyOpen ? 'Hide' : 'Open'}</span>
+              </button>
+              {safetyOpen && (
+                <div className="mt-3 space-y-3 text-sm text-slate-200">
+                  {([
+                    ['hideRude', 'Hide rude words behind stars (tap to show)'],
+                    ['threatAlerts', 'Alert me about possible threats'],
+                    ['voiceGuess', 'Guess whether a voice sounds male or female'],
+                  ] as ['hideRude' | 'threatAlerts' | 'voiceGuess', string][]).map(([k, label]) => (
+                    <label key={k} className="flex min-h-[36px] cursor-pointer items-center gap-3">
+                      <input type="checkbox" className="h-5 w-5 accent-emerald-500" checked={safety[k]} onChange={(e) => updateSafety({ [k]: e.target.checked })} />
+                      {label}
+                    </label>
+                  ))}
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Trusted contact name</span>
+                      <input value={safety.contactName} onChange={(e) => updateSafety({ contactName: e.target.value })} className={`min-h-[44px] w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-slate-50 ${focusRing}`} />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Their phone number</span>
+                      <input
+                        type="tel"
+                        inputMode="tel"
+                        value={safety.contactPhone}
+                        onChange={(e) => updateSafety({ contactPhone: e.target.value })}
+                        placeholder="Country code first, like +234..."
+                        className={`min-h-[44px] w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-slate-50 placeholder-slate-500 ${focusRing}`}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Emergency number</span>
+                      <input type="tel" inputMode="tel" value={safety.emergency} onChange={(e) => updateSafety({ emergency: e.target.value })} className={`min-h-[44px] w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-slate-50 ${focusRing}`} />
+                    </label>
+                  </div>
+                  {safety.contactPhone && (
+                    <a
+                      href={smsLink(safety.contactPhone, 'This is a test message from Motion. There is no emergency.')}
+                      className={`inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700 bg-slate-950 px-4 font-semibold text-slate-100 hover:bg-slate-800 ${focusRing}`}
+                    >
+                      <MessageSquare className="h-4 w-4" aria-hidden="true" /> Open a test message to this contact
+                    </a>
+                  )}
+                  <p className="text-xs leading-relaxed text-slate-400">
+                    Motion listens for words only, not tone of voice. It can miss a threat or raise a false alarm, and the male or female
+                    label is only a guess from pitch. It never contacts anyone by itself: it opens a message for you to send. It is an aid,
+                    not a guarantee of safety. If you are in danger, move toward other people and ask for help.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2 text-sm text-slate-300">
+              <span className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5">Vowels <strong className="text-slate-100">{vowels}</strong></span>
+              <span className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5">Consonants <strong className="text-slate-100">{consonants}</strong></span>
+              <span className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5">
+                Confidence <strong className="text-slate-100">{avgConfidence !== null ? `${Math.round(avgConfidence * 100)}%` : 'Pending...'}</strong>
+              </span>
+            </div>
+          </section>
+        )}
+
+        {appMode === 'community' && (
+          <section className="rounded-2xl border border-slate-800 bg-slate-900 px-6 py-10 text-center">
+            <span className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-500/15 text-sky-300">
+              <Globe className="h-7 w-7" aria-hidden="true" />
+            </span>
+            <h2 className="mb-2 text-xl font-bold text-sky-300">Motion Social Hub (coming soon)</h2>
+            <p className="mx-auto mb-5 max-w-md text-base leading-relaxed text-slate-300">
+              A dedicated social space for Deaf, Hard-of-Hearing, and Mute creators to connect, share sign-language video reels, collaborate in creator clubs, and join live sign hangouts.
+            </p>
+            <span className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm font-semibold text-amber-300">
+              <Zap className="h-4 w-4" aria-hidden="true" /> Early access waitlist opening soon
+            </span>
+          </section>
+        )}
+      </div>
+
+      {showing && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Message for the other person"
+          onClick={() => setShowing(null)}
+          className="fixed inset-0 z-50 flex cursor-pointer flex-col items-center justify-center bg-black p-6 text-center"
+        >
+          <p className="max-w-full break-words font-bold leading-tight text-white" style={{ fontSize: overlayFont(showing) }}>
+            {showing}
           </p>
-          <div style={{ display: 'inline-block', background: '#0b0f19', padding: '0.75rem 1.25rem', borderRadius: '0.5rem', border: '1px solid #1e293b', fontSize: '0.875rem', color: '#fbbf24', fontWeight: '700' }}>
-            🚀 Phase 1 Foundation & Early Access Waitlist Opening Soon
-          </div>
+          <p className="mt-10 text-sm text-slate-400">Tap anywhere to close</p>
         </div>
       )}
     </div>
