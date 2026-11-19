@@ -44,6 +44,9 @@ const PATTERNS: { kind: Threat['kind']; re: RegExp }[] = [
   // "you're dead", "you will die"
   { kind: 'violence', re: /\byou(?:'re| are| will be|'ll be) dead\b/ },
   { kind: 'violence', re: /\byou(?:'re| are)? (?:going to|gonna|will|'ll) die\b/ },
+  { kind: 'violence', re: /\bi want you dead\b/ },
+  { kind: 'violence', re: /\bi want (?:your|his|her|their) head\b/ },
+  { kind: 'violence', re: /\bi(?:'ll| will|'m going to| am going to| gonna)\s+cut\s+(?:you|your (?:throat|neck|head))\b/ },
   // "I know where you live", "watch your back", "I'll find you"
   { kind: 'stalking', re: /\bi know where you (?:live|stay|work|sleep)\b/ },
   { kind: 'stalking', re: /\bwatch your back\b/ },
@@ -64,7 +67,7 @@ const PATTERNS: { kind: Threat['kind']; re: RegExp }[] = [
   { kind: 'abuse', re: /\bi hope you die\b/ },
   { kind: 'abuse', re: /\bi wish you (?:were|was) dead\b/ },
   // Nigerian Pidgin: "I go beat you" means "I will beat you"
-  { kind: 'violence', re: /\bi go\s+(?:kill|beat|finish|waste|slap|punish|deal with)\s+(?:you|am|una)\b/ },
+  { kind: 'violence', re: /\bi go\s+(?:kill|beat|finish|waste|slap|punish|deal with|cut)\s+(?:you|am|una|your (?:neck|head|throat))\b/ },
 ];
 
 export function detectThreat(text: string): Threat | null {

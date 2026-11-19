@@ -263,6 +263,8 @@ export default function TranscriptTest() {
   const [safetyOpen, setSafetyOpen] = useState(false);
   const [helpLoc, setHelpLoc] = useState('');
   const pitchSamplesRef = useRef<number[]>([]);
+  const [testText, setTestText] = useState('');
+  const [testResult, setTestResult] = useState('');
   const raiseThreat = (id: string, text: string, phrase: string) => {
     setThreat({ id, text, phrase, confirmed: null });
     try { navigator.vibrate?.([300, 150, 300, 150, 300]); } catch { /* not available */ }
@@ -970,6 +972,19 @@ export default function TranscriptTest() {
     if (mouthPlay) setMouthPlay({ ...mouthPlay, id: Math.random(), at: Date.now(), speed: mouthSpeed });
   };
 
+  // Lets the person type a sentence to see what the checks would do, including the real alert.
+  const runCheckTest = () => {
+    const t = testText.trim();
+    if (!t) return;
+    const th = detectThreat(t);
+    const rude = hasProfanity(t);
+    setTestResult(
+      `${th ? `Threat: yes (${th.kind}, matched "${th.phrase}")${safety.threatAlerts ? '. The alert is shown at the top.' : '. Alerts are switched off, so no alert is shown.'}` : 'Threat: no'}. ` +
+      `${rude ? `Rude words: yes, shown as "${maskProfanity(t)}"` : 'Rude words: no'}.`,
+    );
+    if (th && safety.threatAlerts) raiseThreat('test-' + Date.now(), t, th.phrase);
+  };
+
   const confirmThreat = (yes: boolean) => {
     if (!threat) return;
     if (!yes) { setThreat(null); return; }
@@ -1046,6 +1061,66 @@ export default function TranscriptTest() {
             })}
           </ul>
         </nav>
+
+        {/* Threat alert: shown on every screen, pinned to the top */}
+        {threat && (
+          <div role="alert" className="sticky top-2 z-40 mb-3 max-h-[85vh] overflow-y-auto rounded-2xl border-2 border-red-500 bg-slate-950 p-4 shadow-xl">
+            <div className="flex items-center gap-2 text-red-200">
+              <ShieldAlert className="h-6 w-6" aria-hidden="true" />
+              <h3 className="text-lg font-bold">Possible threat heard</h3>
+            </div>
+            <p className="mt-2 text-lg font-semibold text-slate-50">&ldquo;{threat.text}&rdquo;</p>
+            {threat.confirmed === null ? (
+              <>
+                <p className="mt-2 text-sm text-slate-200">Motion can make mistakes. Did someone threaten you?</p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <button type="button" onClick={() => confirmThreat(true)} className={`${bigAction} bg-red-600 text-white hover:bg-red-500`}>
+                    Yes, I feel threatened
+                  </button>
+                  <button type="button" onClick={() => confirmThreat(false)} className={`${bigAction} border border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800`}>
+                    No, a mistake or a joke
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="mt-3 space-y-2">
+                <p className="text-sm text-slate-200">Move toward other people and light. You do not have to answer or argue.</p>
+                {safety.contactPhone ? (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <a href={smsLink(safety.contactPhone, helpBody)} className={`${bigAction} bg-red-600 text-white hover:bg-red-500`}>
+                      <MessageSquare className="h-5 w-5" aria-hidden="true" /> Text {safety.contactName || 'my contact'} with my location
+                    </a>
+                    <a href={whatsappLink(safety.contactPhone, helpBody)} className={`${bigAction} bg-emerald-600 text-white hover:bg-emerald-500`}>
+                      <MessageSquare className="h-5 w-5" aria-hidden="true" /> WhatsApp {safety.contactName || 'my contact'}
+                    </a>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => setSafetyOpen(true)} className={`${bigAction} w-full border border-amber-500 bg-amber-500/10 text-amber-200`}>
+                    No trusted contact saved. Add one in Safety settings below
+                  </button>
+                )}
+                <p className="text-xs text-slate-300">
+                  {helpLoc ? 'Your location is in the message.' : 'Finding your location. You can send now; it is added if found.'} The message opens ready to send. You tap Send.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowing('I am deaf and I need help. Please stay with me and call for help.')}
+                  className={`${bigAction} w-full bg-sky-500 text-slate-950 hover:bg-sky-400`}
+                >
+                  <Maximize2 className="h-5 w-5" aria-hidden="true" /> Show &ldquo;I need help&rdquo; to people nearby
+                </button>
+                <a href={`tel:${safety.emergency}`} className={`${bigAction} w-full border border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800`}>
+                  <Phone className="h-5 w-5" aria-hidden="true" /> Call {safety.emergency} (a voice call, ask someone nearby to speak)
+                </a>
+                <button type="button" onClick={() => setThreat(null)} className={`w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-300 underline-offset-2 hover:underline ${focusRing}`}>
+                  Close this alert
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+
 
         {appMode !== 'community' && (
           <>
@@ -1309,63 +1384,6 @@ export default function TranscriptTest() {
               </div>
             </div>
 
-            {threat && (
-              <div role="alert" className="mb-3 rounded-2xl border-2 border-red-500 bg-red-500/10 p-4">
-                <div className="flex items-center gap-2 text-red-200">
-                  <ShieldAlert className="h-6 w-6" aria-hidden="true" />
-                  <h3 className="text-lg font-bold">Possible threat heard</h3>
-                </div>
-                <p className="mt-2 text-lg font-semibold text-slate-50">&ldquo;{threat.text}&rdquo;</p>
-                {threat.confirmed === null ? (
-                  <>
-                    <p className="mt-2 text-sm text-slate-200">Motion can make mistakes. Did someone threaten you?</p>
-                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                      <button type="button" onClick={() => confirmThreat(true)} className={`${bigAction} bg-red-600 text-white hover:bg-red-500`}>
-                        Yes, I feel threatened
-                      </button>
-                      <button type="button" onClick={() => confirmThreat(false)} className={`${bigAction} border border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800`}>
-                        No, a mistake or a joke
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="mt-3 space-y-2">
-                    <p className="text-sm text-slate-200">Move toward other people and light. You do not have to answer or argue.</p>
-                    {safety.contactPhone ? (
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        <a href={smsLink(safety.contactPhone, helpBody)} className={`${bigAction} bg-red-600 text-white hover:bg-red-500`}>
-                          <MessageSquare className="h-5 w-5" aria-hidden="true" /> Text {safety.contactName || 'my contact'} with my location
-                        </a>
-                        <a href={whatsappLink(safety.contactPhone, helpBody)} className={`${bigAction} bg-emerald-600 text-white hover:bg-emerald-500`}>
-                          <MessageSquare className="h-5 w-5" aria-hidden="true" /> WhatsApp {safety.contactName || 'my contact'}
-                        </a>
-                      </div>
-                    ) : (
-                      <button type="button" onClick={() => setSafetyOpen(true)} className={`${bigAction} w-full border border-amber-500 bg-amber-500/10 text-amber-200`}>
-                        No trusted contact saved. Add one in Safety settings below
-                      </button>
-                    )}
-                    <p className="text-xs text-slate-300">
-                      {helpLoc ? 'Your location is in the message.' : 'Finding your location. You can send now; it is added if found.'} The message opens ready to send. You tap Send.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => setShowing('I am deaf and I need help. Please stay with me and call for help.')}
-                      className={`${bigAction} w-full bg-sky-500 text-slate-950 hover:bg-sky-400`}
-                    >
-                      <Maximize2 className="h-5 w-5" aria-hidden="true" /> Show &ldquo;I need help&rdquo; to people nearby
-                    </button>
-                    <a href={`tel:${safety.emergency}`} className={`${bigAction} w-full border border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800`}>
-                      <Phone className="h-5 w-5" aria-hidden="true" /> Call {safety.emergency} (a voice call, ask someone nearby to speak)
-                    </a>
-                    <button type="button" onClick={() => setThreat(null)} className={`w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-300 underline-offset-2 hover:underline ${focusRing}`}>
-                      Close this alert
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
             <div
               role="log"
               aria-live="polite"
@@ -1611,6 +1629,32 @@ export default function TranscriptTest() {
                       <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Emergency number</span>
                       <input type="tel" inputMode="tel" value={safety.emergency} onChange={(e) => updateSafety({ emergency: e.target.value })} className={`min-h-[44px] w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-slate-50 ${focusRing}`} />
                     </label>
+                  </div>
+                  <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Test the checks</h4>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                      Motion checks what other people say to you. What you type in the reply box is not checked. Type a sentence here to see what Motion would do with it.
+                    </p>
+                    <div className="mt-2 flex gap-2">
+                      <label htmlFor="check-test" className="sr-only">Sentence to test</label>
+                      <input
+                        id="check-test"
+                        value={testText}
+                        onChange={(e) => setTestText(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') runCheckTest(); }}
+                        placeholder="Type a sentence to test"
+                        className={`min-h-[44px] min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-900 px-3 text-slate-50 placeholder-slate-500 ${focusRing}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={runCheckTest}
+                        disabled={!testText.trim()}
+                        className={`min-h-[44px] rounded-xl bg-sky-500 px-4 font-bold text-slate-950 hover:bg-sky-400 disabled:opacity-40 ${focusRing}`}
+                      >
+                        Test
+                      </button>
+                    </div>
+                    {testResult && <p role="status" className="mt-2 text-sm text-slate-100">{testResult}</p>}
                   </div>
                   {safety.contactPhone && (
                     <a
