@@ -87,8 +87,14 @@ export function cleanPhone(raw: string): string {
   return (s.startsWith('+') ? '+' : '') + s.replace(/\D/g, '');
 }
 
-export function helpMessage(heard: string, mapLink: string, time: string): string {
-  const where = mapLink ? `My location: ${mapLink}` : 'My location is not available yet.';
+export type LocationState = 'idle' | 'searching' | 'found' | 'failed';
+
+export function helpMessage(heard: string, mapLink: string, time: string, state: LocationState = 'found'): string {
+  const where = mapLink
+    ? `My location: ${mapLink}`
+    : state === 'failed'
+      ? 'My location could not be found.'
+      : 'My location is still being found.';
   const said = heard ? ` Words heard: "${heard}".` : '';
   return `I am deaf. I feel threatened and need help. ${where} Time: ${time}.${said} Please call me or come to me.`;
 }

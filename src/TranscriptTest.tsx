@@ -12,6 +12,7 @@ import type { MouthPlay, MouthWord, ToneKey } from './mouthShapes';
 import { guessVoiceGender, pickVoice, pitchFor } from './voices';
 import type { VoiceKind } from './voices';
 import { detectThreat, hasProfanity, helpMessage, maskProfanity, smsLink, whatsappLink } from './safety';
+import type { LocationState } from './safety';
 import { estimatePitch, guessVoice } from './pitch';
 
 declare const Vosk: any;
@@ -262,11 +263,54 @@ export default function TranscriptTest() {
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [safetyOpen, setSafetyOpen] = useState(false);
   const [helpLoc, setHelpLoc] = useState('');
+  const [locState, setLocState] = useState<LocationState>('idle');
+  const [locAcc, setLocAcc] = useState(0);
+  const locIdRef = useRef(0);
+  const locWatchRef = useRef<number | null>(null);
   const pitchSamplesRef = useRef<number[]>([]);
   const [testText, setTestText] = useState('');
   const [testResult, setTestResult] = useState('');
+  const stopLocationWatch = () => {
+    if (locWatchRef.current !== null && navigator.geolocation) navigator.geolocation.clearWatch(locWatchRef.current);
+    locWatchRef.current = null;
+  };
+  // Looks for the person's location. A quick, rough fix (wifi and mobile network) comes first, then GPS refines it
+  // for up to 25 seconds. It starts as soon as an alert is raised, so it is usually ready when help is wanted.
+  const findLocation = () => {
+    const id = ++locIdRef.current;
+    stopLocationWatch();
+    setHelpLoc('');
+    setLocAcc(0);
+    if (!navigator.geolocation) { setLocState('failed'); return; }
+    setLocState('searching');
+    let best = Infinity;
+    const accept = (pos: GeolocationPosition) => {
+      if (id !== locIdRef.current) return;
+      if (pos.coords.accuracy < best) {
+        best = pos.coords.accuracy;
+        setHelpLoc(`https://maps.google.com/?q=${pos.coords.latitude.toFixed(5)},${pos.coords.longitude.toFixed(5)}`);
+        setLocAcc(Math.round(pos.coords.accuracy));
+        setLocState('found');
+      }
+      if (pos.coords.accuracy <= 50) stopLocationWatch();
+    };
+    const failed = (err: GeolocationPositionError) => {
+      if (id !== locIdRef.current || best !== Infinity) return;
+      if (err.code === 1) { stopLocationWatch(); setLocState('failed'); } // the person said no to location
+    };
+    navigator.geolocation.getCurrentPosition(accept, failed, { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 });
+    locWatchRef.current = navigator.geolocation.watchPosition(accept, failed, { enableHighAccuracy: true, timeout: 25000, maximumAge: 0 });
+    window.setTimeout(() => {
+      if (id !== locIdRef.current) return;
+      stopLocationWatch();
+      if (best === Infinity) setLocState('failed');
+    }, 26000);
+  };
+  useEffect(() => stopLocationWatch, []);
+
   const raiseThreat = (id: string, text: string, phrase: string) => {
     setThreat({ id, text, phrase, confirmed: null });
+    findLocation();
     try { navigator.vibrate?.([300, 150, 300, 150, 300]); } catch { /* not available */ }
   };
   const [practiceSlow, setPracticeSlow] = useState(true);
@@ -989,17 +1033,9 @@ export default function TranscriptTest() {
     if (!threat) return;
     if (!yes) { setThreat(null); return; }
     setThreat({ ...threat, confirmed: true });
-    setHelpLoc('');
-    // Find the location now, so the message is ready when the person taps it.
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => setHelpLoc(`https://maps.google.com/?q=${pos.coords.latitude.toFixed(5)},${pos.coords.longitude.toFixed(5)}`),
-        () => setHelpLoc(''),
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
-      );
-    }
+    if (locState === 'idle' || locState === 'failed') findLocation();
   };
-  const helpBody = helpMessage(threat ? threat.text : '', helpLoc, new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+  const helpBody = helpMessage(threat ? threat.text : '', helpLoc, new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), locState);
   const bigAction = `flex min-h-[52px] items-center justify-center gap-2 rounded-xl px-4 text-base font-bold transition ${focusRing}`;
 
   const canStart = provider === 'azure' || isReady;
@@ -1099,9 +1135,19 @@ export default function TranscriptTest() {
                     No trusted contact saved. Add one in Safety settings below
                   </button>
                 )}
-                <p className="text-xs text-slate-300">
-                  {helpLoc ? 'Your location is in the message.' : 'Finding your location. You can send now; it is added if found.'} The message opens ready to send. You tap Send.
+                <p role="status" className="text-xs text-slate-300">
+                  {locState === 'found'
+                    ? `Your location is in the message (accurate to about ${locAcc} metres).`
+                    : locState === 'failed'
+                      ? 'Your location could not be found. The message says so.'
+                      : 'Finding your location. You can send now; the message says it is still being found. If the location arrives later, tap the button again.'}{' '}
+                  The message opens ready to send. You tap Send.
                 </p>
+                {locState === 'failed' && (
+                  <button type="button" onClick={findLocation} className={`${bigAction} w-full border border-amber-500 bg-amber-500/10 text-amber-200`}>
+                    Try to find my location again
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setShowing('I am deaf and I need help. Please stay with me and call for help.')}
@@ -1655,6 +1701,22 @@ export default function TranscriptTest() {
                       </button>
                     </div>
                     {testResult && <p role="status" className="mt-2 text-sm text-slate-100">{testResult}</p>}
+                  </div>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={findLocation}
+                      className={`inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700 bg-slate-950 px-4 font-semibold text-slate-100 hover:bg-slate-800 ${focusRing}`}
+                    >
+                      Check that my location works
+                    </button>
+                    {locState !== 'idle' && !threat && (
+                      <p role="status" className="mt-2 text-xs text-slate-300">
+                        {locState === 'searching' && 'Looking for your location...'}
+                        {locState === 'found' && `Location works (accurate to about ${locAcc} metres).`}
+                        {locState === 'failed' && 'Location not found. Allow location for this site in your browser settings, go outside or near a window, and try again.'}
+                      </p>
+                    )}
                   </div>
                   {safety.contactPhone && (
                     <a
