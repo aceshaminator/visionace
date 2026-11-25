@@ -5,8 +5,45 @@ import type { ModelKey, VoiceLine } from './voiceNote';
 
 const focusRing = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400';
 const MODEL_KEY = 'motion_voicenote_model';
+const ENGINE_FLAG = 'motion_vn_engine';
+const modelFlag = (k: ModelKey) => `motion_vn_model_${k}`;
+
+// Approximate download sizes in MB: the speech model, and the engine that runs it (needed once).
+const MODEL_MB: Record<ModelKey, number> = { better: 75, fast: 40 };
+const ENGINE_MB = 27;
 
 type Stage = 'idle' | 'reading' | 'loading' | 'download' | 'writing' | 'done' | 'error';
+
+const flagSet = (key: string): boolean => {
+  try { return localStorage.getItem(key) === '1'; } catch { return false; }
+};
+const setFlag = (key: string) => {
+  try { localStorage.setItem(key, '1'); } catch { /* storage unavailable */ }
+};
+
+// True when the speech model is not on this device yet, so a download is coming.
+async function needsDownload(k: ModelKey): Promise<boolean> {
+  if (flagSet(modelFlag(k))) return false;
+  try {
+    // The model files are kept by the browser in this store. If they are already there, no download is needed.
+    if ('caches' in window) {
+      const cache = await caches.open('transformers-cache');
+      const keys = await cache.keys();
+      if (keys.some((r) => r.url.includes(MODELS[k].id) && r.url.endsWith('.onnx'))) {
+        setFlag(modelFlag(k));
+        return false;
+      }
+    }
+  } catch { /* cannot look: treat as not downloaded */ }
+  return true;
+}
+
+// Mobile data is only detectable in some browsers (Chrome on Android). Returns null when unknown.
+function onMobileData(): boolean | null {
+  const c = (navigator as any).connection;
+  if (!c || typeof c.type !== 'string') return null;
+  return c.type === 'cellular';
+}
 
 function friendlyError(err: any): string {
   const m = String((err && err.message) || err || '');
@@ -33,6 +70,8 @@ export default function VoiceNoteImport(props: { onLines: (lines: VoiceLine[]) =
   const [message, setMessage] = useState('');
   const [count, setCount] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [pending, setPending] = useState<File | null>(null); // a file waiting for the person to agree to the download
+  const [checking, setChecking] = useState(false);
   const cancelRef = useRef<(() => void) | null>(null);
 
   const busy = stage === 'reading' || stage === 'loading' || stage === 'download' || stage === 'writing';
@@ -40,8 +79,10 @@ export default function VoiceNoteImport(props: { onLines: (lines: VoiceLine[]) =
   useEffect(() => () => { if (cancelRef.current) cancelRef.current(); }, []);
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
 
-  const run = async (file: File) => {
-    if (busy || disabled) return;
+  // The size of the download for a model: the engine is only counted if it is not on the device yet.
+  const downloadMb = (k: ModelKey) => MODEL_MB[k] + (flagSet(ENGINE_FLAG) ? 0 : ENGINE_MB);
+
+  const start = async (file: File, key: ModelKey) => {
     setFileName(file.name);
     setMessage('');
     setCount(0);
@@ -49,12 +90,15 @@ export default function VoiceNoteImport(props: { onLines: (lines: VoiceLine[]) =
     setPart({ index: 0, total: 0 });
     setAudioUrl(URL.createObjectURL(file));
     setStage('reading');
-    const job = transcribeVoiceNote(file, MODELS[model].id, (ev) => {
+    const job = transcribeVoiceNote(file, MODELS[key].id, (ev) => {
       if (ev.type === 'reading') setStage('reading');
       else if (ev.type === 'loading') setStage('loading');
       else if (ev.type === 'download') { setStage('download'); setPercent(ev.percent); }
-      else if (ev.type === 'ready') setStage('writing');
-      else if (ev.type === 'part') {
+      else if (ev.type === 'ready') {
+        setFlag(modelFlag(key)); // from now on the model is on this device
+        setFlag(ENGINE_FLAG);
+        setStage('writing');
+      } else if (ev.type === 'part') {
         setStage('writing');
         setPart({ index: ev.index + 1, total: ev.total });
         if (ev.lines.length) onLines(ev.lines);
@@ -74,6 +118,21 @@ export default function VoiceNoteImport(props: { onLines: (lines: VoiceLine[]) =
     }
   };
 
+  // A file was chosen: if a download is needed, ask first. Otherwise start straight away.
+  const choose = async (file: File, key: ModelKey = model) => {
+    if (busy || disabled || checking) return;
+    setChecking(true);
+    let download = false;
+    try { download = await needsDownload(key); } finally { setChecking(false); }
+    if (download) {
+      setPending(file);
+      setStage('idle');
+      return;
+    }
+    setPending(null);
+    await start(file, key);
+  };
+
   const chooseModel = (k: ModelKey) => {
     setModel(k);
     try { localStorage.setItem(MODEL_KEY, k); } catch { /* storage unavailable */ }
@@ -88,11 +147,15 @@ export default function VoiceNoteImport(props: { onLines: (lines: VoiceLine[]) =
     : stage === 'error' ? message
     : '';
 
+  const mobile = onMobileData();
+  const smallerKey: ModelKey = 'fast';
+  const inactive = busy || !!disabled || checking;
+
   return (
     <section aria-label="Voice notes" className="mt-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Voice notes from WhatsApp or any app</h3>
       <p className="mt-1 text-sm leading-relaxed text-slate-300">
-        Choose a voice note. Motion writes out what is said and adds it to the captions above. It reads the file directly, so no microphone is used.
+        Choose a voice note. Motion writes out what is said and adds it to the captions above. It reads the file directly, so no microphone is used, and the voice note never leaves your device.
       </p>
 
       <div role="radiogroup" aria-label="Accuracy" className="mt-3 flex flex-wrap gap-2">
@@ -114,17 +177,17 @@ export default function VoiceNoteImport(props: { onLines: (lines: VoiceLine[]) =
       </div>
 
       <label
-        onDragOver={(e) => { e.preventDefault(); if (!busy && !disabled) setDragging(true); }}
+        onDragOver={(e) => { e.preventDefault(); if (!inactive) setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
           const f = e.dataTransfer.files && e.dataTransfer.files[0];
-          if (f) run(f);
+          if (f) choose(f);
         }}
         className={`mt-3 flex min-h-[64px] cursor-pointer items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 text-center text-base font-bold transition ${
           dragging ? 'border-emerald-400 bg-emerald-500/10 text-emerald-200' : 'border-slate-600 bg-slate-950 text-slate-100 hover:bg-slate-800'
-        } ${busy || disabled ? 'pointer-events-none opacity-40' : ''}`}
+        } ${inactive ? 'pointer-events-none opacity-40' : ''}`}
       >
         <Upload className="h-5 w-5" aria-hidden="true" />
         {disabled ? 'Stop listening first' : 'Choose a voice note (or drop it here)'}
@@ -132,16 +195,58 @@ export default function VoiceNoteImport(props: { onLines: (lines: VoiceLine[]) =
           type="file"
           accept="audio/*,video/*,.opus,.ogg,.oga,.m4a,.aac,.mp3,.wav,.mp4,.3gp"
           className="sr-only"
-          disabled={busy || disabled}
+          disabled={inactive}
           onChange={(e) => {
             const f = e.target.files && e.target.files[0];
-            if (f) run(f);
+            if (f) choose(f);
             e.target.value = '';
           }}
         />
       </label>
 
+      {pending && !busy && (
+        <div role="group" aria-label="One-time download needed" className="mt-3 rounded-xl border border-amber-500/60 bg-amber-500/10 p-3">
+          <h4 className="text-sm font-bold text-amber-200">One-time download needed</h4>
+          <p className="mt-1 text-sm leading-relaxed text-slate-100">
+            To write out voice notes, Motion must download its speech engine to this device: about {downloadMb(model)} MB, once.
+            After that it works without internet.{' '}
+            {mobile === true
+              ? 'You seem to be on mobile data, which may use up your data bundle or cost money. Wi-Fi is better.'
+              : mobile === false
+                ? 'You seem to be on Wi-Fi, which is good for a download this size.'
+                : 'Use Wi-Fi if you can.'}
+          </p>
+          <p className="mt-1 truncate text-xs text-slate-400">Waiting: {pending.name}</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => { const f = pending; setPending(null); start(f, model); }}
+              className={`min-h-[48px] rounded-xl bg-emerald-500 px-4 text-sm font-bold text-slate-950 hover:bg-emerald-400 ${focusRing}`}
+            >
+              Download and continue
+            </button>
+            <button
+              type="button"
+              onClick={() => setPending(null)}
+              className={`min-h-[48px] rounded-xl border border-slate-600 bg-slate-950 px-4 text-sm font-semibold text-slate-100 hover:bg-slate-800 ${focusRing}`}
+            >
+              Not now
+            </button>
+          </div>
+          {model !== smallerKey && (
+            <button
+              type="button"
+              onClick={() => { const f = pending; chooseModel(smallerKey); setPending(null); choose(f, smallerKey); }}
+              className={`mt-2 w-full rounded-xl px-3 py-2 text-sm font-semibold text-sky-300 underline-offset-2 hover:underline ${focusRing}`}
+            >
+              Use the smaller download instead (about {downloadMb(smallerKey)} MB, less accurate)
+            </button>
+          )}
+        </div>
+      )}
+
       <div role="status" aria-live="polite" className="mt-3">
+        {checking && <p className="text-sm text-slate-300">Checking the speech model...</p>}
         {busy && (
           <div className="flex items-center gap-2 text-sm font-semibold text-sky-200">
             <Loader2 className="h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -195,7 +300,7 @@ export default function VoiceNoteImport(props: { onLines: (lines: VoiceLine[]) =
         </ul>
       </details>
       <p className="mt-2 text-xs text-slate-400">
-        The first time, Motion downloads the speech model once ({MODELS[model].size.split(',')[0]}); after that it is kept on the device. Whisper can still mishear names and strong accents, so treat the text as a guide.
+        Whisper can still mishear names and strong accents, so treat the text as a guide.
       </p>
     </section>
   );
