@@ -14,6 +14,9 @@ export default defineConfig({
         // The two vosk scripts are a few MB each; allow them into the offline cache.
         maximumFileSizeToCacheInBytes: 10 * 1024 * 1024,
         globPatterns: ['**/*.{js,css,html,ico,png,svg,wasm}'],
+        // The Whisper engine file (about 27 MB) is too big to install together with the app.
+        // It is saved the first time a voice note is used instead (see the last rule below).
+        globIgnores: ['**/ort-*.wasm'],
         // The 41 MB speech model is too big to pre-cache, so it is saved the first time it loads.
         // After that the app can recognise speech with no internet.
         runtimeCaching: [
@@ -27,15 +30,14 @@ export default defineConfig({
             },
           },
           {
-            // The voice note reader (Whisper) loads its engine files from this address. Keep them after the
-            // first time so voice notes can be written out with no internet. The Whisper model itself is kept
-            // by the browser in its own storage.
-            urlPattern: ({ url }) => url.hostname === 'cdn.jsdelivr.net',
+            // The voice note reader (Whisper) needs its engine files. Keep them after the first use so voice
+            // notes can be written out with no internet. The Whisper model itself is kept by the browser.
+            urlPattern: ({ url }) => /\/assets\/ort-.*\.(wasm|mjs)$/.test(url.pathname) || url.hostname === 'cdn.jsdelivr.net',
             handler: 'CacheFirst',
             options: {
               cacheName: 'motion-whisper-engine',
               cacheableResponse: { statuses: [0, 200] },
-              expiration: { maxEntries: 20 },
+              expiration: { maxEntries: 10 },
             },
           },
         ],
