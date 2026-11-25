@@ -73,6 +73,7 @@ export default function VoiceNoteImport(props: { onLines: (lines: VoiceLine[]) =
   const [pending, setPending] = useState<File | null>(null); // a file waiting for the person to agree to the download
   const [checking, setChecking] = useState(false);
   const cancelRef = useRef<(() => void) | null>(null);
+  const sharedHandled = useRef(false);
 
   const busy = stage === 'reading' || stage === 'loading' || stage === 'download' || stage === 'writing';
 
@@ -137,6 +138,26 @@ export default function VoiceNoteImport(props: { onLines: (lines: VoiceLine[]) =
     setModel(k);
     try { localStorage.setItem(MODEL_KEY, k); } catch { /* storage unavailable */ }
   };
+
+  // When a voice note is shared into Motion from another app, the app opens with ?shared=voice-note.
+  // Pick the file up and treat it like a chosen file (including the download warning).
+  useEffect(() => {
+    if (sharedHandled.current) return;
+    sharedHandled.current = true;
+    (async () => {
+      try {
+        if (new URLSearchParams(window.location.search).get('shared') !== 'voice-note') return;
+        window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+        const cache = await caches.open('motion-shared');
+        const res = await cache.match('/shared-file');
+        if (!res) return;
+        const blob = await res.blob();
+        await cache.delete('/shared-file');
+        const name = decodeURIComponent(res.headers.get('X-File-Name') || 'shared voice note');
+        await choose(new File([blob], name, { type: blob.type }));
+      } catch { /* nothing was shared */ }
+    })();
+  }, []);
 
   const statusText =
     stage === 'reading' ? 'Reading the voice note...'

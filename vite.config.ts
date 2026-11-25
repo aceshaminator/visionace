@@ -17,6 +17,8 @@ export default defineConfig({
         // The Whisper engine file (about 27 MB) is too big to install together with the app.
         // It is saved the first time a voice note is used instead (see the last rule below).
         globIgnores: ['**/ort-*.wasm'],
+        // Handles files shared into the app from the phone's Share menu (see public/share-target-sw.js).
+        importScripts: ['share-target-sw.js'],
         // The 41 MB speech model is too big to pre-cache, so it is saved the first time it loads.
         // After that the app can recognise speech with no internet.
         runtimeCaching: [
@@ -52,6 +54,15 @@ export default defineConfig({
         display: 'standalone',
         orientation: 'portrait',
         start_url: '/',
+        // Makes Motion appear in the Share menu for audio files, such as WhatsApp voice notes (installed app, Android).
+        share_target: {
+          action: '/share-voice-note',
+          method: 'POST',
+          enctype: 'multipart/form-data',
+          params: {
+            files: [{ name: 'audio', accept: ['audio/*', 'video/*', '.opus', '.ogg', '.m4a', '.mp3', '.wav'] }],
+          },
+        },
         icons: [
           { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
           { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
