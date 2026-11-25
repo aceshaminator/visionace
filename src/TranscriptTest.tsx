@@ -1031,7 +1031,7 @@ export default function TranscriptTest() {
   };
 
   // Adds the lines written out from an imported voice note (WhatsApp or any other app) to the captions.
-  const importVoiceNote = (lines: { text: string; start: number }[]) => {
+  const importVoiceNote = (lines: { text: string; start: number }[], source?: string) => {
     const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
     let firstThreat: { id: string; text: string; phrase: string } | null = null;
     const made: TranscriptEntry[] = [];
@@ -1041,7 +1041,7 @@ export default function TranscriptTest() {
       const th = detectThreat(text);
       const id = Math.random().toString(36).substring(2);
       if (th && !firstThreat) firstThreat = { id, text, phrase: th.phrase };
-      made.push({ id, speaker: 'Voice note', text, timestamp: clock(l.start), rude: hasProfanity(text), threat: !!th });
+      made.push({ id, speaker: source === 'recording' ? 'Recording' : 'Voice note', text, timestamp: clock(l.start), rude: hasProfanity(text), threat: !!th });
     }
     if (!made.length) return;
     setEntries((prev) => {
