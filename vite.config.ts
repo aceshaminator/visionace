@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
+  // The voice note reader runs in a background worker that loads code in pieces, so it needs the module format.
+  worker: { format: 'es' },
   plugins: [
     react(),
     VitePWA({
@@ -22,6 +24,18 @@ export default defineConfig({
               cacheName: 'motion-speech-model',
               cacheableResponse: { statuses: [0, 200] },
               expiration: { maxEntries: 2 },
+            },
+          },
+          {
+            // The voice note reader (Whisper) loads its engine files from this address. Keep them after the
+            // first time so voice notes can be written out with no internet. The Whisper model itself is kept
+            // by the browser in its own storage.
+            urlPattern: ({ url }) => url.hostname === 'cdn.jsdelivr.net',
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'motion-whisper-engine',
+              cacheableResponse: { statuses: [0, 200] },
+              expiration: { maxEntries: 20 },
             },
           },
         ],

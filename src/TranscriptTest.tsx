@@ -14,6 +14,7 @@ import type { VoiceKind } from './voices';
 import { detectThreat, hasProfanity, helpMessage, maskProfanity, smsLink, whatsappLink } from './safety';
 import type { LocationState } from './safety';
 import { estimatePitch, guessVoice } from './pitch';
+import VoiceNoteImport from './VoiceNoteImport';
 
 declare const Vosk: any;
 
@@ -1029,6 +1030,28 @@ export default function TranscriptTest() {
     if (th && safety.threatAlerts) raiseThreat('test-' + Date.now(), t, th.phrase);
   };
 
+  // Adds the lines written out from an imported voice note (WhatsApp or any other app) to the captions.
+  const importVoiceNote = (lines: { text: string; start: number }[]) => {
+    const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+    let firstThreat: { id: string; text: string; phrase: string } | null = null;
+    const made: TranscriptEntry[] = [];
+    for (const l of lines) {
+      const text = l.text.trim();
+      if (!text) continue;
+      const th = detectThreat(text);
+      const id = Math.random().toString(36).substring(2);
+      if (th && !firstThreat) firstThreat = { id, text, phrase: th.phrase };
+      made.push({ id, speaker: 'Voice note', text, timestamp: clock(l.start), rude: hasProfanity(text), threat: !!th });
+    }
+    if (!made.length) return;
+    setEntries((prev) => {
+      const updated = [...prev, ...made];
+      try { localStorage.setItem('motion_transcript_entries', JSON.stringify(updated)); } catch { /* storage unavailable */ }
+      return updated;
+    });
+    if (firstThreat && safetyRef.current.threatAlerts) raiseThreat(firstThreat.id, firstThreat.text, firstThreat.phrase);
+  };
+
   const confirmThreat = (yes: boolean) => {
     if (!threat) return;
     if (!yes) { setThreat(null); return; }
@@ -1477,6 +1500,8 @@ export default function TranscriptTest() {
               )}
               <div ref={transcriptEndRef} />
             </div>
+
+            <VoiceNoteImport onLines={importVoiceNote} disabled={recording} />
 
             <div className="mt-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
               <div className="mb-2 flex items-center justify-between">
