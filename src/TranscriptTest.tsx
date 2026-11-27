@@ -15,6 +15,8 @@ import { detectThreat, hasProfanity, helpMessage, maskProfanity, smsLink, whatsa
 import type { LocationState } from './safety';
 import { estimatePitch, guessVoice } from './pitch';
 import VoiceNoteImport from './VoiceNoteImport';
+import FingerSpell from './FingerSpell';
+import AlarmWatch from './AlarmWatch';
 
 declare const Vosk: any;
 
@@ -1340,17 +1342,11 @@ export default function TranscriptTest() {
           </>
         )}
 
+        <AlarmWatch />
+
         {/* ACTIVE MODES */}
         {appMode === 'sign' && (
-          <Panel
-            icon={<Hand className="h-5 w-5 text-amber-300" aria-hidden="true" />}
-            title="Sign language"
-            badge={`GLOSS: ${currentGloss}`}
-            badgeLabel={`Current Gloss: ${currentGloss}`}
-            badgeClass="bg-amber-900/60 text-amber-200"
-          >
-            <div ref={signContainerRef} aria-label="3D Sign Language Render Canvas" tabIndex={0} className="w-full bg-slate-950" style={{ height: '260px' }} />
-          </Panel>
+          <FingerSpell latestCaption={entries.filter((e) => e.speaker !== 'You').slice(-1).map((e) => e.text).join(' ')} />
         )}
 
         {appMode === 'avatar' && (
